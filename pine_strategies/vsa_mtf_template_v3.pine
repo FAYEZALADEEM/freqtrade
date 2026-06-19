@@ -1,0 +1,262 @@
+//@version=6
+strategy("VSA MTF Template v3 (Arabic Source-Constrained)", overlay=true, pyramiding=0, initial_capital=25000, commission_type=strategy.commission.percent, commission_value=0.0, process_orders_on_close=true)
+
+// ============================================================================
+// ملاحظات مهمة:
+// 1) هذه نسخة متعددة الفريمات فعلياً باستخدام request.security().
+// 2) التنفيذ يتم على فريم الشارت الحالي = LTF (الفريم التنفيذي).
+// 3) يتم سحب سياق HTF و MTF من فريمين أعلى.
+// 4) ما زالت هذه نسخة مقيّدة بالنص وليست إعادة بناء كاملة لمحرك TradeGuider الاحتكاري.
+// 5) أي جزء غير مغلق رقمياً في النص تم وسمه [يتطلب مراجعة].
+// ============================================================================
+
+// ---------------------------
+// الفريمات
+// ---------------------------
+htfTf = input.timeframe("240", "HTF الاتجاه الأكبر [مثال: 4 ساعات]")
+mtfTf = input.timeframe("60",  "MTF التأكيد [مثال: 60 دقيقة]")
+
+// ---------------------------
+// إعدادات عامة
+// ---------------------------
+volLen            = input.int(20,  "Volume average length", minval=1)
+spreadLen         = input.int(20,  "Spread average length", minval=1)
+backgroundBars    = input.int(50,  "Background lookback bars", minval=5)
+newGroundLookback = input.int(200, "New ground lookback for End of Rising Market [يتطلب مراجعة]", minval=20)
+emaFastLen        = input.int(20,  "EMA fast [تقريب]", minval=1)
+emaSlowLen        = input.int(50,  "EMA slow [تقريب]", minval=1)
+
+riskPct           = input.float(2.5, "Risk % per trade", step=0.1, minval=0.1)
+rrMultiple        = input.float(3.0, "Reward/Risk multiple", step=0.1, minval=0.1)
+entryBufferTicks  = input.int(1, "Entry buffer (ticks) [يتطلب مراجعة]", minval=0)
+stopBufferTicks   = input.int(1, "Stop buffer (ticks) [يتطلب مراجعة]", minval=0)
+
+entryMode         = input.string("Stop above/below signal", "Entry mode", options=["Market on confirmation", "Stop above/below signal"])
+allowLongs        = input.bool(true,  "Allow Longs")
+allowShorts       = input.bool(true,  "Allow Shorts")
+
+// ---------------------------
+// فلاتر المحاذاة متعددة الفريمات
+// ---------------------------
+useTrendAlignment      = input.bool(true,  "Use 3TF trend alignment [تقريب]")
+useBackgroundAlignment = input.bool(true,  "Require strength/weakness in any timeframe")
+requireAboveShakeout   = input.bool(false, "Require close above last Shake-out high for longs")
+
+// ---------------------------
+// عتبات تقريبية لأن النص لا يعطي أرقاماً مغلقة
+// ---------------------------
+narrowSpreadFactor = input.float(0.9,  "Narrow spread factor [يتطلب مراجعة]", step=0.05)
+wideSpreadFactor   = input.float(1.3,  "Wide spread factor [يتطلب مراجعة]", step=0.05)
+ultraVolFactor     = input.float(1.5,  "Ultra volume factor [يتطلب مراجعة]", step=0.05)
+nearHighFrac       = input.float(0.70, "Close near high fraction [يتطلب مراجعة]", step=0.05, minval=0.50, maxval=1.0)
+nearLowFrac        = input.float(0.30, "Close near low fraction [يتطلب مراجعة]", step=0.05, minval=0.0, maxval=0.50)
+midTolerance       = input.float(0.25, "Mid-close tolerance [يتطلب مراجعة]", step=0.01, minval=0.01, maxval=0.49)
+
+entryBuffer = syminfo.mintick * entryBufferTicks
+stopBuffer  = syminfo.mintick * stopBufferTicks
+
+// ---------------------------
+// دوال مساعدة
+// ---------------------------
+f_spread() =>
+    high - low
+
+f_avgSpread(_len) =>
+    ta.sma(f_spread(), _len)
+
+f_avgVol(_len) =>
+    ta.sma(volume, _len)
+
+f_closePos() =>
+    spr = f_spread()
+    spr > 0 ? (close - low) / spr : 0.5
+
+f_isUpBar() =>
+    close > close[1]
+
+f_isDownBar() =>
+    close < close[1]
+
+f_isSmallSpread(_spreadLen, _narrowFactor) =>
+    f_spread() < f_avgSpread(_spreadLen) * _narrowFactor
+
+f_isWideSpread(_spreadLen, _wideFactor) =>
+    f_spread() > f_avgSpread(_spreadLen) * _wideFactor
+
+f_isUltraVol(_volLen, _ultraFactor) =>
+    volume > f_avgVol(_volLen) * _ultraFactor
+
+f_closeNearHigh(_nearHighFrac) =>
+    f_closePos() >= _nearHighFrac
+
+f_closeNearLow(_nearLowFrac) =>
+    f_closePos() <= _nearLowFrac
+
+f_closeNearMid(_midTol) =>
+    math.abs(f_closePos() - 0.5) <= _midTol
+
+// نهاية السوق الصاعد: عمود صاعد + حجم Ultra + سبريد ضيق + إغلاق قريب من المنتصف + أرض جديدة.
+f_isEORM(_volLen, _spreadLen, _ultraFactor, _narrowFactor, _midTol, _lookback) =>
+    f_isUpBar() and f_isUltraVol(_volLen, _ultraFactor) and f_isSmallSpread(_spreadLen, _narrowFactor) and f_closeNearMid(_midTol) and high >= ta.highest(high, _lookback)
+
+// الطرد / Shake-out: تقريب محافظ = عمود هابط واسع + حجم Ultra + إغلاق قريب من القمة.
+f_isShakeout(_volLen, _spreadLen, _ultraFactor, _wideFactor, _nearHighFrac) =>
+    f_isDownBar() and f_isWideSpread(_spreadLen, _wideFactor) and f_isUltraVol(_volLen, _ultraFactor) and f_closeNearHigh(_nearHighFrac)
+
+// لا طلب: عمود صاعد + سبريد ضيق + حجم أقل من آخر عمودين.
+f_isNoDemand(_spreadLen, _narrowFactor) =>
+    f_isUpBar() and f_isSmallSpread(_spreadLen, _narrowFactor) and volume < volume[1] and volume < volume[2]
+
+// لا عرض: عمود هابط + سبريد ضيق + حجم أقل من آخر عمودين.
+f_isNoSupply(_spreadLen, _narrowFactor) =>
+    f_isDownBar() and f_isSmallSpread(_spreadLen, _narrowFactor) and volume < volume[1] and volume < volume[2]
+
+// اختبار في سوق صاعد: تقريب محافظ مستند إلى الوصف النصي.
+f_isTestInRisingMarket(_spreadLen, _narrowFactor, _nearLowFrac) =>
+    f_isDownBar() and f_isSmallSpread(_spreadLen, _narrowFactor) and f_closeNearLow(_nearLowFrac) and volume < volume[1] and volume < volume[2] and high <= high[1]
+
+// Upthrust: تقريب محافظ = امتداد لأعلى ثم إغلاق ضعيف قرب القاع على سبريد واضح.
+f_isUpthrust(_spreadLen, _wideFactor, _nearLowFrac) =>
+    f_isUpBar() and high > high[1] and f_isWideSpread(_spreadLen, _wideFactor) and f_closeNearLow(_nearLowFrac)
+
+f_trendUp(_fastLen, _slowLen) =>
+    ta.ema(close, _fastLen) > ta.ema(close, _slowLen)
+
+f_trendDn(_fastLen, _slowLen) =>
+    ta.ema(close, _fastLen) < ta.ema(close, _slowLen)
+
+// ---------------------------
+// الشارت الحالي = LTF التنفيذي
+// ---------------------------
+spread      = high - low
+avgSpread   = ta.sma(spread, spreadLen)
+avgVol      = ta.sma(volume, volLen)
+closePos    = spread > 0 ? (close - low) / spread : 0.5
+chartTrendUp = ta.ema(close, emaFastLen) > ta.ema(close, emaSlowLen)
+chartTrendDn = ta.ema(close, emaFastLen) < ta.ema(close, emaSlowLen)
+
+chartEORM        = f_isEORM(volLen, spreadLen, ultraVolFactor, narrowSpreadFactor, midTolerance, newGroundLookback)
+chartShakeout    = f_isShakeout(volLen, spreadLen, ultraVolFactor, wideSpreadFactor, nearHighFrac)
+chartNoDemand    = f_isNoDemand(spreadLen, narrowSpreadFactor)
+chartNoSupply    = f_isNoSupply(spreadLen, narrowSpreadFactor)
+chartTest        = f_isTestInRisingMarket(spreadLen, narrowSpreadFactor, nearLowFrac)
+chartUpthrust    = f_isUpthrust(spreadLen, wideSpreadFactor, nearLowFrac)
+
+chartWeakRecent   = ta.barssince(chartEORM) >= 0 and ta.barssince(chartEORM) <= backgroundBars
+chartStrongRecent = ta.barssince(chartShakeout) >= 0 and ta.barssince(chartShakeout) <= backgroundBars
+
+lastChartWeakHigh   = ta.valuewhen(chartEORM, high, 0)
+lastChartStrongLow  = ta.valuewhen(chartShakeout, low, 0)
+lastChartStrongHigh = ta.valuewhen(chartShakeout, high, 0)
+
+// ---------------------------
+// HTF و MTF عبر request.security
+// ---------------------------
+htfTrendUp = request.security(syminfo.tickerid, htfTf, f_trendUp(emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+htfTrendDn = request.security(syminfo.tickerid, htfTf, f_trendDn(emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+mtfTrendUp = request.security(syminfo.tickerid, mtfTf, f_trendUp(emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+mtfTrendDn = request.security(syminfo.tickerid, mtfTf, f_trendDn(emaFastLen, emaSlowLen), lookahead=barmerge.lookahead_off)
+
+htfWeakRecent = request.security(syminfo.tickerid, htfTf, ta.barssince(f_isEORM(volLen, spreadLen, ultraVolFactor, narrowSpreadFactor, midTolerance, newGroundLookback)) <= backgroundBars, lookahead=barmerge.lookahead_off)
+mtfWeakRecent = request.security(syminfo.tickerid, mtfTf, ta.barssince(f_isEORM(volLen, spreadLen, ultraVolFactor, narrowSpreadFactor, midTolerance, newGroundLookback)) <= backgroundBars, lookahead=barmerge.lookahead_off)
+htfStrongRecent = request.security(syminfo.tickerid, htfTf, ta.barssince(f_isShakeout(volLen, spreadLen, ultraVolFactor, wideSpreadFactor, nearHighFrac)) <= backgroundBars, lookahead=barmerge.lookahead_off)
+mtfStrongRecent = request.security(syminfo.tickerid, mtfTf, ta.barssince(f_isShakeout(volLen, spreadLen, ultraVolFactor, wideSpreadFactor, nearHighFrac)) <= backgroundBars, lookahead=barmerge.lookahead_off)
+
+// ---------------------------
+// محاذاة السياق
+// ---------------------------
+trendAlignLong  = chartTrendUp and mtfTrendUp and htfTrendUp
+trendAlignShort = chartTrendDn and mtfTrendDn and htfTrendDn
+
+backgroundLongAny  = chartStrongRecent or mtfStrongRecent or htfStrongRecent
+backgroundShortAny = chartWeakRecent or mtfWeakRecent or htfWeakRecent
+
+longContextOk  = (not useTrendAlignment or trendAlignLong) and (not useBackgroundAlignment or backgroundLongAny)
+shortContextOk = (not useTrendAlignment or trendAlignShort) and (not useBackgroundAlignment or backgroundShortAny)
+
+aboveShakeoutOk = not requireAboveShakeout or (not na(lastChartStrongHigh) and close > lastChartStrongHigh)
+
+// ---------------------------
+// تأكيدات الشمعة التالية
+// ---------------------------
+noSupplyConfirmed = chartNoSupply[1] and close > close[1]
+testConfirmed     = chartTest[1] and close > close[1]
+noDemandConfirmed = chartNoDemand[1] and close < close[1]
+upthrustConfirmed = chartUpthrust[1] and close < close[1]
+
+longSignal  = (noSupplyConfirmed or testConfirmed) and longContextOk and aboveShakeoutOk
+shortSignal = (noDemandConfirmed or upthrustConfirmed) and shortContextOk
+
+longReason  = noSupplyConfirmed ? "No Supply" : testConfirmed ? "Test" : ""
+shortReason = noDemandConfirmed ? "No Demand" : upthrustConfirmed ? "Upthrust" : ""
+
+// ---------------------------
+// إدارة الحجم / المخاطرة
+// ---------------------------
+riskCapital = strategy.equity * (riskPct / 100.0)
+
+calcQty(entryPrice, stopPrice) =>
+    riskPerUnit = math.abs(entryPrice - stopPrice)
+    riskPerUnit > 0 ? (riskCapital / riskPerUnit) : na
+
+// ---------------------------
+// تنفيذ Long
+// ---------------------------
+if strategy.position_size == 0 and allowLongs and longSignal
+    float signalHigh = noSupplyConfirmed ? high[1] : testConfirmed ? high[1] : high[1]
+    float signalLow  = noSupplyConfirmed ? low[1]  : testConfirmed ? low[1]  : low[1]
+    float anchorLow  = na(lastChartStrongLow) ? signalLow : math.min(signalLow, lastChartStrongLow)
+    float stopPrice  = anchorLow - stopBuffer
+    float entryPrice = entryMode == "Market on confirmation" ? close : signalHigh + entryBuffer
+    float qty        = calcQty(entryPrice, stopPrice)
+    if not na(qty) and entryPrice > stopPrice
+        if entryMode == "Market on confirmation"
+            strategy.entry("Long", strategy.long, qty=qty, comment="Long")
+        else
+            strategy.entry("Long", strategy.long, qty=qty, stop=entryPrice, comment="Long")
+        strategy.exit("Long Exit", from_entry="Long", stop=stopPrice, limit=entryPrice + (entryPrice - stopPrice) * rrMultiple)
+
+// ---------------------------
+// تنفيذ Short
+// ---------------------------
+if strategy.position_size == 0 and allowShorts and shortSignal
+    float signalHigh = noDemandConfirmed ? high[1] : upthrustConfirmed ? high[1] : high[1]
+    float signalLow  = noDemandConfirmed ? low[1]  : upthrustConfirmed ? low[1]  : low[1]
+    float anchorHigh = na(lastChartWeakHigh) ? signalHigh : math.max(signalHigh, lastChartWeakHigh)
+    float stopPrice  = anchorHigh + stopBuffer
+    float entryPrice = entryMode == "Market on confirmation" ? close : signalLow - entryBuffer
+    float qty        = calcQty(entryPrice, stopPrice)
+    if not na(qty) and entryPrice < stopPrice
+        if entryMode == "Market on confirmation"
+            strategy.entry("Short", strategy.short, qty=qty, comment="Short")
+        else
+            strategy.entry("Short", strategy.short, qty=qty, stop=entryPrice, comment="Short")
+        strategy.exit("Short Exit", from_entry="Short", stop=stopPrice, limit=entryPrice - (stopPrice - entryPrice) * rrMultiple)
+
+// ---------------------------
+// رسومات مساعدة
+// ---------------------------
+plot(ta.ema(close, emaFastLen), "EMA Fast", color=color.new(color.green, 0))
+plot(ta.ema(close, emaSlowLen), "EMA Slow", color=color.new(color.red, 0))
+
+plotshape(chartEORM,     title="End of Rising Market", style=shape.triangledown, color=color.red,  location=location.abovebar, size=size.tiny, text="EORM")
+plotshape(chartShakeout, title="Shake-out",            style=shape.triangleup,   color=color.lime, location=location.belowbar, size=size.tiny, text="SO")
+plotshape(chartNoDemand, title="No Demand",            style=shape.circle,       color=color.orange, location=location.abovebar, size=size.tiny, text="ND")
+plotshape(chartNoSupply, title="No Supply",            style=shape.circle,       color=color.aqua, location=location.belowbar, size=size.tiny, text="NS")
+plotshape(chartTest,     title="Test in Rising Market", style=shape.square,      color=color.new(color.green, 0), location=location.belowbar, size=size.tiny, text="T")
+plotshape(chartUpthrust, title="Upthrust",             style=shape.square,       color=color.new(color.red, 0), location=location.abovebar, size=size.tiny, text="UT")
+
+plotshape(longSignal and strategy.position_size == 0,  title="Long Setup",  style=shape.labelup,   color=color.green, location=location.belowbar, size=size.tiny, text="BUY")
+plotshape(shortSignal and strategy.position_size == 0, title="Short Setup", style=shape.labeldown, color=color.red,   location=location.abovebar, size=size.tiny, text="SELL")
+
+bgcolor(useTrendAlignment ? (trendAlignLong ? color.new(color.green, 92) : trendAlignShort ? color.new(color.red, 92) : na) : na)
+
+// ---------------------------
+// تنبيهات تفسيرية على الرسم
+// ---------------------------
+plotchar(chartStrongRecent, title="Chart Strength Recent", char="S", location=location.bottom, color=color.green, size=size.tiny)
+plotchar(chartWeakRecent,   title="Chart Weakness Recent", char="W", location=location.top,    color=color.red,   size=size.tiny)
+plotchar(mtfTrendUp,        title="MTF Up", char="M", location=location.bottom, color=color.new(color.green, 55), size=size.tiny)
+plotchar(htfTrendUp,        title="HTF Up", char="H", location=location.bottom, color=color.new(color.green, 75), size=size.tiny)
+plotchar(mtfTrendDn,        title="MTF Down", char="M", location=location.top, color=color.new(color.red, 55), size=size.tiny)
+plotchar(htfTrendDn,        title="HTF Down", char="H", location=location.top, color=color.new(color.red, 75), size=size.tiny)

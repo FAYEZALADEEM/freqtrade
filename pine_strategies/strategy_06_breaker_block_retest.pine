@@ -1,0 +1,57 @@
+//@version=6
+strategy("06 - Breaker Block Retest", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: Breaker Block هو كسر مستوى pivot ثم عودة لاختبار منطقة الشمعة التي سبقت الكسر مع إغلاق رفض.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بصفقات الشراء.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بصفقات البيع.")
+pivotLen = input.int(5, "طول الكسر", minval = 2, maxval = 50, group = grp03, tooltip = "عدد الشموع لاكتشاف مستويات الدعم والمقاومة التي تكوّن breaker.")
+maxRetestBars = input.int(40, "أقصى شموع لإعادة الاختبار", minval = 1, maxval = 200, group = grp03, tooltip = "يلغي المنطقة إذا لم يحدث retest خلالها.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف افتراضي بالنقاط.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف مقابل الوقف.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى الدخول بعد ربح محدد.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط اللازمة لتفعيل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت التداول عند تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض إشارات الدخول على الشارت.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+res = ta.valuewhen(not na(ph), ph, 0)
+sup = ta.valuewhen(not na(pl), pl, 0)
+var float bullBreakerHi = na
+var float bullBreakerLo = na
+var int bullBreakerBar = na
+var float bearBreakerHi = na
+var float bearBreakerLo = na
+var int bearBreakerBar = na
+if close > res and close[1] < open[1]
+    bullBreakerHi := high[1]
+    bullBreakerLo := low[1]
+    bullBreakerBar := bar_index
+if close < sup and close[1] > open[1]
+    bearBreakerHi := high[1]
+    bearBreakerLo := low[1]
+    bearBreakerBar := bar_index
+longSignal = enableLong and inSession and not na(bullBreakerBar) and bar_index - bullBreakerBar <= maxRetestBars and low <= bullBreakerHi and close > bullBreakerLo and close > open
+shortSignal = enableShort and inSession and not na(bearBreakerBar) and bar_index - bearBreakerBar <= maxRetestBars and high >= bearBreakerLo and close < bearBreakerHi and close < open
+if longSignal
+    strategy.entry("شراء Breaker", strategy.long)
+if shortSignal
+    strategy.entry("بيع Breaker", strategy.short)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - stopLossPips * pipSize
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + stopLossPips * pipSize
+strategy.exit("خروج شراء Breaker", "شراء Breaker", stop = longStop, limit = strategy.position_avg_price + stopLossPips * pipSize * rr)
+strategy.exit("خروج بيع Breaker", "بيع Breaker", stop = shortStop, limit = strategy.position_avg_price - stopLossPips * pipSize * rr)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء Breaker Block")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع Breaker Block")

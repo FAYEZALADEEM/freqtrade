@@ -1,0 +1,59 @@
+//@version=6
+strategy("01 - CRT Thick Candle Break", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: thick candle هي شمعة جسمها أكبر من متوسط ATR مضروبًا في معامل، وliquidity sweep هي كسر قمة/قاع pivot مؤكد ثم إغلاق عكسي داخل جسم شمعة الكسر.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف. لليورو دولار غالباً 0.0001.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "عند التفعيل يسمح بظهور إشارات الشراء وفتح صفقات شراء.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "عند التفعيل يسمح بظهور إشارات البيع وفتح صفقات بيع.")
+pivotLen = input.int(5, "طول القمم والقيعان", minval = 2, maxval = 50, group = grp03, tooltip = "يحدد عدد الشموع المستخدمة لاكتشاف قمم وقيعان السيولة المؤكدة.")
+atrLen = input.int(14, "طول ATR", minval = 1, maxval = 100, group = grp03, tooltip = "يستخدم لقياس حجم الشمعة السميكة مقارنة بالتذبذب الحالي.")
+thickAtrMult = input.float(0.8, "معامل الشمعة السميكة", minval = 0.1, step = 0.1, group = grp03, tooltip = "يجب أن يكون جسم شمعة الكسر أكبر من ATR مضروبًا في هذا الرقم.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف احتياطي يستخدم إذا كان وقف قمة/قاع الشمعة بعيدًا جدًا أو غير متاح.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "يحدد الهدف بناءً على مضاعف وقف الخسارة.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل وقف الخسارة إلى نقطة الدخول بعد تحرك السعر لصالح الصفقة.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة لصالح الصفقة قبل نقل الوقف إلى نقطة الدخول.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "عند التفعيل يتم السماح بالإشارات فقط داخل وقت الجلسة المحدد. الافتراضي معطل.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت الجلسة المسموح فيه بالتداول عند تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض مثلثات الشراء والبيع على الشارت عند ظهور الإشارات.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+lastHigh = ta.valuewhen(not na(ph), ph, 0)
+lastLow = ta.valuewhen(not na(pl), pl, 0)
+body = math.abs(close - open)
+atr = ta.atr(atrLen)
+thickBull = close > open and body > atr * thickAtrMult
+thickBear = close < open and body > atr * thickAtrMult
+
+sweepHigh = high > lastHigh and thickBull
+sweepLow = low < lastLow and thickBear
+longSignal = enableLong and inSession and sweepLow[1] and close > math.max(open[1], close[1])
+shortSignal = enableShort and inSession and sweepHigh[1] and close < math.min(open[1], close[1])
+
+if longSignal
+    strategy.entry("شراء CRT", strategy.long)
+if shortSignal
+    strategy.entry("بيع CRT", strategy.short)
+
+longBaseStop = strategy.position_avg_price - stopLossPips * pipSize
+shortBaseStop = strategy.position_avg_price + stopLossPips * pipSize
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : longBaseStop
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : shortBaseStop
+longTarget = strategy.position_avg_price + (strategy.position_avg_price - longBaseStop) * rr
+shortTarget = strategy.position_avg_price - (shortBaseStop - strategy.position_avg_price) * rr
+strategy.exit("خروج شراء CRT", "شراء CRT", stop = longStop, limit = longTarget)
+strategy.exit("خروج بيع CRT", "بيع CRT", stop = shortStop, limit = shortTarget)
+
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء CRT Thick Candle Break")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع CRT Thick Candle Break")

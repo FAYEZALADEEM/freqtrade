@@ -1,0 +1,405 @@
+//@version=6
+// =====================================================================
+// Wolf System V18 [Pure] - TradeFix v6
+// نسخة إصلاح عدم فتح الصفقات:
+// - وضع اختبار يفتح صفقات افتراضيًا
+// - وضع صارم مطابق للمحاضرات اختياري
+// - إصلاح قراءة شمعة الانفجار: Engulfing ثم Explosion من شموع HTF مغلقة
+// - إصلاح حجز المخارج الجزئية TP1/TP2
+// =====================================================================
+strategy("Wolf V18 [Pure] - TradeFix v6",
+     overlay=true,
+     initial_capital=10000,
+     commission_type=strategy.commission.cash_per_order,
+     commission_value=2.0,
+     slippage=2,
+     process_orders_on_close=true,
+     calc_on_every_tick=true,
+     pyramiding=0,
+     max_boxes_count=100,
+     max_labels_count=100)
+
+// =====================================================================
+// 1. الإعدادات
+// =====================================================================
+g0 = "0. وضع التشغيل"
+run_mode = input.string("اختبار يفتح صفقات", "وضع التشغيل", options=["اختبار يفتح صفقات", "صارم مطابق للمحاضرات"], group=g0,
+     tooltip="اختبار يفتح صفقات: يعطل الفلاتر الثقيلة مؤقتًا للتأكد من عمل الأوامر. صارم: يفعّل الشروط الأصلية.")
+strict_mode = run_mode == "صارم مطابق للمحاضرات"
+
+g1 = "1. الفريمات"
+htf_bias = input.timeframe("D",  "فريم الاتجاه HTF", group=g1)
+htf_zone = input.timeframe("240","فريم المناطق HTF", group=g1)
+
+g2 = "2. الابتلاع والانفجار"
+require_explosion_input = input.bool(true, "اشترط شمعة انفجار بعد الابتلاع في الوضع الصارم", group=g2)
+body_only               = input.bool(true, "جسم يبلع جسم / تجاهل الذيل", group=g2)
+min_explosion_atr       = input.float(0.8, "حد أدنى لطول شمعة الانفجار × ATR HTF", step=0.1, group=g2)
+
+g3 = "3. السوبر"
+use_super_input   = input.bool(true, "اشترط نموذج السوبر في الوضع الصارم", group=g3)
+pivot_left        = input.int(2, "Pivot left", minval=1, group=g3)
+pivot_right       = input.int(2, "Pivot right", minval=1, group=g3)
+
+g4 = "4. الفيبوناتشي"
+use_fibo_input    = input.bool(true, "اشترط فيبو في الوضع الصارم", group=g4)
+fib_min           = input.float(0.50,  "أقل ارتداد", step=0.01, group=g4)
+fib_max           = input.float(0.786, "أعلى ارتداد", step=0.01, group=g4)
+
+g5 = "5. الجلسات"
+use_session_input = input.bool(true, "اشترط الجلسات في الوضع الصارم", group=g5)
+sess_london       = input.session("0630-1130", "نافذة لندن", group=g5)
+sess_newyork      = input.session("1200-1700", "نافذة نيويورك", group=g5)
+session_tz        = input.string("UTC", "المنطقة الزمنية", options=["UTC","Asia/Riyadh","America/New_York","Europe/London"], group=g5)
+
+g6 = "6. إدارة المخاطر"
+use_auto_qty      = input.bool(false, "حجم آلي حسب المخاطرة", group=g6)
+risk_pct          = input.float(1.0, "% المخاطرة لكل صفقة", step=0.1, group=g6)
+fixed_qty         = input.float(1.0, "حجم ثابت", step=0.1, group=g6)
+min_sl_dist       = input.float(0.0, "أقل مسافة وقف", step=0.1, group=g6)
+
+g7 = "7. الأهداف"
+sl_atr_mult       = input.float(1.0, "سماحية SL × ATR", step=0.1, group=g7)
+tp_rr             = input.float(2.0, "هدف TP الرئيسي R:R", step=0.5, group=g7)
+use_partial       = input.bool(true, "TP1 50% عند 1R ثم TP2", group=g7)
+partial_r         = input.float(1.0, "نقطة TP1 R", step=0.1, group=g7)
+
+g8 = "8. الواجهة والتشخيص"
+show_zones        = input.bool(true, "إظهار المناطق", group=g8)
+show_super        = input.bool(true, "إظهار السوبر", group=g8)
+show_dash         = input.bool(true, "إظهار لوحة التشخيص", group=g8)
+max_zones         = input.int(30, "أقصى عدد مناطق", minval=5, maxval=80, group=g8)
+
+// الفلاتر الفعلية
+require_explosion = strict_mode ? require_explosion_input : false
+use_super         = strict_mode ? use_super_input : false
+use_fibo          = strict_mode ? use_fibo_input : false
+use_session       = strict_mode ? use_session_input : false
+use_bias          = strict_mode
+
+// =====================================================================
+// 2. مؤشرات أساسية
+// =====================================================================
+atr14 = ta.atr(14)
+
+// HTF Bias
+htf_ph     = request.security(syminfo.tickerid, htf_bias, ta.pivothigh(pivot_left, pivot_right), barmerge.gaps_off, barmerge.lookahead_off)
+htf_pl     = request.security(syminfo.tickerid, htf_bias, ta.pivotlow(pivot_left, pivot_right),  barmerge.gaps_off, barmerge.lookahead_off)
+htf_close  = request.security(syminfo.tickerid, htf_bias, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+var float last_htf_high = na
+var float last_htf_low  = na
+if not na(htf_ph)
+    last_htf_high := htf_ph
+if not na(htf_pl)
+    last_htf_low  := htf_pl
+
+bull_bias_raw = not na(last_htf_high) and htf_close > last_htf_high
+bear_bias_raw = not na(last_htf_low)  and htf_close < last_htf_low
+bull_bias = use_bias ? bull_bias_raw : true
+bear_bias = use_bias ? bear_bias_raw : true
+
+// =====================================================================
+// 3. شموع HTF للمناطق
+// =====================================================================
+// [1] آخر شمعة HTF مغلقة، [2] التي قبلها، [3] التي قبلها
+ho1 = request.security(syminfo.tickerid, htf_zone, open[1],  barmerge.gaps_off, barmerge.lookahead_off)
+hc1 = request.security(syminfo.tickerid, htf_zone, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+hh1 = request.security(syminfo.tickerid, htf_zone, high[1],  barmerge.gaps_off, barmerge.lookahead_off)
+hl1_htf = request.security(syminfo.tickerid, htf_zone, low[1],   barmerge.gaps_off, barmerge.lookahead_off)
+
+ho2 = request.security(syminfo.tickerid, htf_zone, open[2],  barmerge.gaps_off, barmerge.lookahead_off)
+hc2 = request.security(syminfo.tickerid, htf_zone, close[2], barmerge.gaps_off, barmerge.lookahead_off)
+hh2 = request.security(syminfo.tickerid, htf_zone, high[2],  barmerge.gaps_off, barmerge.lookahead_off)
+hl2_htf = request.security(syminfo.tickerid, htf_zone, low[2],   barmerge.gaps_off, barmerge.lookahead_off)
+
+ho3 = request.security(syminfo.tickerid, htf_zone, open[3],  barmerge.gaps_off, barmerge.lookahead_off)
+hc3 = request.security(syminfo.tickerid, htf_zone, close[3], barmerge.gaps_off, barmerge.lookahead_off)
+hh3 = request.security(syminfo.tickerid, htf_zone, high[3],  barmerge.gaps_off, barmerge.lookahead_off)
+hl3_htf = request.security(syminfo.tickerid, htf_zone, low[3],   barmerge.gaps_off, barmerge.lookahead_off)
+
+htf_atr1 = request.security(syminfo.tickerid, htf_zone, ta.atr(14)[1], barmerge.gaps_off, barmerge.lookahead_off)
+htf_zone_change = ta.change(time(htf_zone))
+
+body_top(float o, float c) => math.max(o, c)
+body_bot(float o, float c) => math.min(o, c)
+
+// بدون انفجار: [2] مبتلعة، [1] بالعة
+bull_eng_noexp = (hc2 < ho2) and (hc1 > ho1) and (body_bot(ho1, hc1) <= body_bot(ho2, hc2)) and (body_top(ho1, hc1) >= body_top(ho2, hc2))
+bear_eng_noexp = (hc2 > ho2) and (hc1 < ho1) and (body_top(ho1, hc1) >= body_top(ho2, hc2)) and (body_bot(ho1, hc1) <= body_bot(ho2, hc2))
+
+// مع انفجار: [3] مبتلعة، [2] بالعة، [1] انفجار مغلقة
+bull_eng_exp = (hc3 < ho3) and (hc2 > ho2) and (body_bot(ho2, hc2) <= body_bot(ho3, hc3)) and (body_top(ho2, hc2) >= body_top(ho3, hc3))
+bear_eng_exp = (hc3 > ho3) and (hc2 < ho2) and (body_top(ho2, hc2) >= body_top(ho3, hc3)) and (body_bot(ho2, hc2) <= body_bot(ho3, hc3))
+
+bull_explosion = hc1 > hh2 and (hh1 - hl1_htf) >= (htf_atr1 * min_explosion_atr)
+bear_explosion = hc1 < hl2_htf and (hh1 - hl1_htf) >= (htf_atr1 * min_explosion_atr)
+
+bull_zone_signal = require_explosion ? (bull_eng_exp and bull_explosion) : bull_eng_noexp
+bear_zone_signal = require_explosion ? (bear_eng_exp and bear_explosion) : bear_eng_noexp
+
+// حدود المنطقة: إذا لا يوجد انفجار نستخرج من [2]، وإذا يوجد من [3]
+base_o = require_explosion ? ho3 : ho2
+base_c = require_explosion ? hc3 : hc2
+base_h = require_explosion ? hh3 : hh2
+base_l = require_explosion ? hl3_htf : hl2_htf
+
+base_top = body_top(base_o, base_c)
+base_bot = body_bot(base_o, base_c)
+
+demand_top    = body_only ? base_top : math.max(base_h, base_top)
+demand_bottom = body_only ? base_bot : base_l
+supply_top    = body_only ? base_top : base_h
+supply_bottom = body_only ? base_bot : math.min(base_l, base_bot)
+
+// =====================================================================
+// 4. إدارة المناطق
+// =====================================================================
+type Zone
+    float top
+    float bot
+    bool  is_demand
+    bool  active
+    int   created_bar
+    box   bx
+
+var array<Zone> zones = array.new<Zone>()
+var int demand_created = 0
+var int supply_created = 0
+
+if htf_zone_change != 0 and barstate.isconfirmed
+    if bull_zone_signal and not na(demand_top) and not na(demand_bottom) and demand_top > demand_bottom
+        b = show_zones ? box.new(bar_index, demand_top, bar_index + 5, demand_bottom,
+             bgcolor=color.new(color.green, 85), border_color=color.new(color.green, 50)) : na
+        array.push(zones, Zone.new(demand_top, demand_bottom, true, true, bar_index, b))
+        demand_created += 1
+
+    if bear_zone_signal and not na(supply_top) and not na(supply_bottom) and supply_top > supply_bottom
+        b = show_zones ? box.new(bar_index, supply_top, bar_index + 5, supply_bottom,
+             bgcolor=color.new(color.red, 85), border_color=color.new(color.red, 50)) : na
+        array.push(zones, Zone.new(supply_top, supply_bottom, false, true, bar_index, b))
+        supply_created += 1
+
+    while array.size(zones) > max_zones
+        old = array.shift(zones)
+        if not na(old.bx)
+            box.delete(old.bx)
+
+// =====================================================================
+// 5. السوبر على فريم التنفيذ
+// =====================================================================
+ph_ltf = ta.pivothigh(pivot_left, pivot_right)
+pl_ltf = ta.pivotlow(pivot_left, pivot_right)
+
+var float last_high  = na
+var float prev_high  = na
+var float last_low   = na
+var float prev_low   = na
+
+if not na(ph_ltf)
+    prev_high := last_high
+    last_high := ph_ltf
+if not na(pl_ltf)
+    prev_low  := last_low
+    last_low  := pl_ltf
+
+cross_close_above_last_high = ta.crossover(close, last_high)
+cross_close_below_last_low  = ta.crossunder(close, last_low)
+
+bull_super_setup = not na(last_low) and not na(prev_low) and not na(last_high) and not na(prev_high) and last_low < prev_low and last_high > prev_high
+bear_super_setup = not na(last_low) and not na(prev_low) and not na(last_high) and not na(prev_high) and last_high < prev_high and last_low < prev_low
+
+bull_super_confirmed = bull_super_setup and close > last_high and cross_close_above_last_high
+bear_super_confirmed = bear_super_setup and close < last_low and cross_close_below_last_low
+
+super_ok_long  = use_super ? bull_super_confirmed : true
+super_ok_short = use_super ? bear_super_confirmed : true
+
+// =====================================================================
+// 6. الفيبوناتشي
+// =====================================================================
+var float swing_high_val = na
+var float swing_low_val  = na
+var int   swing_high_bar = na
+var int   swing_low_bar  = na
+
+if not na(ph_ltf)
+    swing_high_val := ph_ltf
+    swing_high_bar := bar_index - pivot_right
+if not na(pl_ltf)
+    swing_low_val  := pl_ltf
+    swing_low_bar  := bar_index - pivot_right
+
+float fib_ret = na
+bool fib_ok_long = not use_fibo
+bool fib_ok_short = not use_fibo
+
+if not na(swing_high_val) and not na(swing_low_val)
+    range_sw = swing_high_val - swing_low_val
+    if range_sw > 0
+        if swing_high_bar > swing_low_bar
+            fib_ret := (swing_high_val - close) / range_sw
+            fib_ok_long := use_fibo ? (fib_ret >= fib_min and fib_ret <= fib_max) : true
+        else
+            fib_ret := (close - swing_low_val) / range_sw
+            fib_ok_short := use_fibo ? (fib_ret >= fib_min and fib_ret <= fib_max) : true
+
+// =====================================================================
+// 7. الجلسات
+// =====================================================================
+in_lon = not na(time(timeframe.period, sess_london,  session_tz))
+in_ny  = not na(time(timeframe.period, sess_newyork, session_tz))
+in_sess = use_session ? (in_lon or in_ny) : true
+
+// =====================================================================
+// 8. منطق الدخول
+// =====================================================================
+var float entry_price = na
+var float entry_sl    = na
+var float entry_tp1   = na
+var float entry_tp2   = na
+var bool  be_moved    = false
+
+can_long  = false
+can_short = false
+
+n = array.size(zones)
+if n > 0
+    for i = n - 1 to 0
+        z = array.get(zones, i)
+        if not z.active
+            continue
+
+        if show_zones and not na(z.bx)
+            box.set_right(z.bx, bar_index + 2)
+
+        // إبطال المنطقة عند كسرها بإغلاق
+        if (z.is_demand and close < z.bot) or (not z.is_demand and close > z.top)
+            z.active := false
+            if show_zones and not na(z.bx)
+                box.set_bgcolor(z.bx, color.new(color.gray, 92))
+            array.set(zones, i, z)
+            continue
+
+        // دخول شراء عند لمس منطقة طلب
+        if z.is_demand and low <= z.top and close >= z.bot
+            if bull_bias and in_sess and super_ok_long and fib_ok_long and strategy.position_size == 0
+                can_long := true
+                entry_price := close
+                entry_sl := z.bot - (atr14 * sl_atr_mult)
+                if min_sl_dist > 0 and (entry_price - entry_sl) < min_sl_dist
+                    entry_sl := entry_price - min_sl_dist
+                entry_tp1 := entry_price + (entry_price - entry_sl) * partial_r
+                entry_tp2 := entry_price + (entry_price - entry_sl) * tp_rr
+                be_moved := false
+                z.active := false
+                array.set(zones, i, z)
+                break
+
+        // دخول بيع عند لمس منطقة عرض
+        if not z.is_demand and high >= z.bot and close <= z.top
+            if bear_bias and in_sess and super_ok_short and fib_ok_short and strategy.position_size == 0
+                can_short := true
+                entry_price := close
+                entry_sl := z.top + (atr14 * sl_atr_mult)
+                if min_sl_dist > 0 and (entry_sl - entry_price) < min_sl_dist
+                    entry_sl := entry_price + min_sl_dist
+                entry_tp1 := entry_price - (entry_sl - entry_price) * partial_r
+                entry_tp2 := entry_price - (entry_sl - entry_price) * tp_rr
+                be_moved := false
+                z.active := false
+                array.set(zones, i, z)
+                break
+
+// =====================================================================
+// 9. حجم الصفقة
+// =====================================================================
+calc_qty(float entry, float stop) =>
+    float risk_per_unit = math.max(math.abs(entry - stop), syminfo.mintick)
+    float risk_amount   = strategy.equity * (risk_pct / 100.0)
+    float pt_value      = syminfo.pointvalue > 0 ? syminfo.pointvalue : 1.0
+    float q = risk_amount / (risk_per_unit * pt_value)
+    use_auto_qty ? math.max(q, syminfo.mintick) : fixed_qty
+
+// =====================================================================
+// 10. إرسال الأوامر
+// =====================================================================
+if can_long and not na(entry_sl) and not na(entry_tp2)
+    q = calc_qty(entry_price, entry_sl)
+    strategy.entry("Long", strategy.long, qty=q, comment="Wolf L")
+    if use_partial
+        strategy.exit("TP1-L", "Long", qty_percent=50, limit=entry_tp1, stop=entry_sl, comment_profit="TP1", comment_loss="SL")
+        strategy.exit("TP2-L", "Long", qty_percent=50, limit=entry_tp2, stop=entry_sl, comment_profit="TP2", comment_loss="SL")
+    else
+        strategy.exit("TP-L", "Long", qty_percent=100, limit=entry_tp2, stop=entry_sl, comment_profit="TP", comment_loss="SL")
+
+if can_short and not na(entry_sl) and not na(entry_tp2)
+    q = calc_qty(entry_price, entry_sl)
+    strategy.entry("Short", strategy.short, qty=q, comment="Wolf S")
+    if use_partial
+        strategy.exit("TP1-S", "Short", qty_percent=50, limit=entry_tp1, stop=entry_sl, comment_profit="TP1", comment_loss="SL")
+        strategy.exit("TP2-S", "Short", qty_percent=50, limit=entry_tp2, stop=entry_sl, comment_profit="TP2", comment_loss="SL")
+    else
+        strategy.exit("TP-S", "Short", qty_percent=100, limit=entry_tp2, stop=entry_sl, comment_profit="TP", comment_loss="SL")
+
+// تحريك وقف TP2 للدخول بعد وصول TP1
+if strategy.position_size > 0 and use_partial and not be_moved and not na(entry_tp1)
+    if high >= entry_tp1
+        be_moved := true
+        strategy.exit("TP2-L", "Long", qty_percent=50, limit=entry_tp2, stop=entry_price)
+
+if strategy.position_size < 0 and use_partial and not be_moved and not na(entry_tp1)
+    if low <= entry_tp1
+        be_moved := true
+        strategy.exit("TP2-S", "Short", qty_percent=50, limit=entry_tp2, stop=entry_price)
+
+// =====================================================================
+// 11. الرسوم والتشخيص
+// =====================================================================
+bg_col = bull_bias_raw ? color.new(color.green, 94) : bear_bias_raw ? color.new(color.red, 94) : color.new(color.gray, 97)
+bgcolor(bg_col)
+
+plotshape(can_long,  style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small, title="Long Signal", text="L")
+plotshape(can_short, style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small, title="Short Signal", text="S")
+plotshape(show_super and bull_super_confirmed, style=shape.diamond, location=location.belowbar, color=color.aqua, size=size.tiny, title="Bull Super")
+plotshape(show_super and bear_super_confirmed, style=shape.diamond, location=location.abovebar, color=color.fuchsia, size=size.tiny, title="Bear Super")
+
+plot(strategy.position_size != 0 ? entry_price : na, "Entry", color=color.yellow, linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? entry_sl : na, "SL", color=color.red, linewidth=1, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? entry_tp2 : na, "TP2", color=color.lime, linewidth=1, style=plot.style_linebr)
+
+if show_dash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 10, bgcolor=color.new(color.black, 75), border_width=1, border_color=color.gray)
+    table.cell(dash, 0, 0, "Wolf TradeFix", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    table.cell(dash, 1, 0, run_mode, text_color=color.white, bgcolor=color.new(color.blue, 50))
+
+    table.cell(dash, 0, 1, "Bias filter", text_color=color.white)
+    table.cell(dash, 1, 1, use_bias ? "ON" : "OFF", text_color=use_bias ? color.lime : color.gray)
+
+    table.cell(dash, 0, 2, "Session", text_color=color.white)
+    table.cell(dash, 1, 2, in_sess ? "ON" : "OFF", text_color=in_sess ? color.lime : color.gray)
+
+    table.cell(dash, 0, 3, "Super filter", text_color=color.white)
+    table.cell(dash, 1, 3, use_super ? "ON" : "OFF", text_color=use_super ? color.lime : color.gray)
+
+    table.cell(dash, 0, 4, "Fibo filter", text_color=color.white)
+    table.cell(dash, 1, 4, use_fibo ? "ON" : "OFF", text_color=use_fibo ? color.lime : color.gray)
+
+    table.cell(dash, 0, 5, "Explosion", text_color=color.white)
+    table.cell(dash, 1, 5, require_explosion ? "ON" : "OFF", text_color=require_explosion ? color.lime : color.gray)
+
+    table.cell(dash, 0, 6, "Zones active", text_color=color.white)
+    table.cell(dash, 1, 6, str.tostring(array.size(zones)), text_color=color.yellow)
+
+    table.cell(dash, 0, 7, "Created D/S", text_color=color.white)
+    table.cell(dash, 1, 7, str.tostring(demand_created) + " / " + str.tostring(supply_created), text_color=color.yellow)
+
+    table.cell(dash, 0, 8, "Fib%", text_color=color.white)
+    table.cell(dash, 1, 8, na(fib_ret) ? "—" : str.tostring(math.round(fib_ret * 100, 1)) + "%", text_color=color.white)
+
+    table.cell(dash, 0, 9, "Position", text_color=color.white)
+    pos_txt = strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT"
+    table.cell(dash, 1, 9, pos_txt, text_color=color.white)
+
+alertcondition(can_long,  title="Wolf TradeFix Long",  message="Wolf TradeFix Long {{ticker}} @ {{close}}")
+alertcondition(can_short, title="Wolf TradeFix Short", message="Wolf TradeFix Short {{ticker}} @ {{close}}")

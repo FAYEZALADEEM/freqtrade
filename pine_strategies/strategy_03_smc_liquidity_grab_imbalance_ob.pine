@@ -1,0 +1,57 @@
+//@version=6
+strategy("03 - SMC Liquidity Grab Imbalance OB", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: Order Block هو آخر شمعة معاكسة قبل شمعة اندفاع/FVG بعد liquidity grab. هذا تبسيط قابل للبرمجة لما ورد في التقرير.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بفتح صفقات شراء.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بفتح صفقات بيع.")
+pivotLen = input.int(5, "طول مناطق السيولة", minval = 2, maxval = 50, group = grp03, tooltip = "يحدد القمم والقيعان المستخدمة لرصد liquidity grab.")
+atrLen = input.int(14, "طول ATR", minval = 1, maxval = 100, group = grp03, tooltip = "يستخدم لقياس الاندفاع وحساب وقف ATR.")
+impulseMult = input.float(1.0, "معامل شمعة الاندفاع", minval = 0.1, step = 0.1, group = grp03, tooltip = "يجب أن يكون جسم شمعة الاندفاع أكبر من ATR مضروبًا في هذا الرقم.")
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه", group = grp04, tooltip = "يستخدم EMA لتقدير اتجاه أعلى بدلاً من structure mapping اليدوي.")
+trendLen = input.int(100, "طول EMA للاتجاه", minval = 1, maxval = 500, group = grp04, tooltip = "طول EMA المستخدم لفلترة الاتجاه العام.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف احتياطي إذا لم يتم استخدام ATR.")
+atrStopMult = input.float(0.5, "مضاعف ATR للوقف", minval = 0.1, step = 0.1, group = grp06, tooltip = "ورد في التقرير استخدام 0.5 ATR خلف الحركة.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف مقابل المخاطرة.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى نقطة الدخول بعد تحرك السعر لصالح الصفقة.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة قبل نقل الوقف للتعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "الفترة الزمنية المسموحة عند تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الشراء والبيع.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+emaTrend = ta.ema(close, trendLen)
+trendLong = not useTrendFilter or close > emaTrend
+trendShort = not useTrendFilter or close < emaTrend
+atr = ta.atr(atrLen)
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+liqHigh = ta.valuewhen(not na(ph), ph, 0)
+liqLow = ta.valuewhen(not na(pl), pl, 0)
+sweepLow = low < liqLow and close > liqLow
+sweepHigh = high > liqHigh and close < liqHigh
+bullImbalance = low > high[2] and math.abs(close - open) > atr * impulseMult
+bearImbalance = high < low[2] and math.abs(close - open) > atr * impulseMult
+longSignal = enableLong and inSession and trendLong and sweepLow[1] and bullImbalance and close[1] < open[1]
+shortSignal = enableShort and inSession and trendShort and sweepHigh[1] and bearImbalance and close[1] > open[1]
+if longSignal
+    strategy.entry("شراء SMC Grab", strategy.long)
+if shortSignal
+    strategy.entry("بيع SMC Grab", strategy.short)
+baseRisk = math.max(stopLossPips * pipSize, atr * atrStopMult)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - baseRisk
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + baseRisk
+strategy.exit("خروج شراء SMC Grab", "شراء SMC Grab", stop = longStop, limit = strategy.position_avg_price + baseRisk * rr)
+strategy.exit("خروج بيع SMC Grab", "بيع SMC Grab", stop = shortStop, limit = strategy.position_avg_price - baseRisk * rr)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء SMC Liquidity Grab")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع SMC Liquidity Grab")

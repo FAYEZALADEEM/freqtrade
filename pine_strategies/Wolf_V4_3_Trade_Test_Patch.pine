@@ -1,0 +1,653 @@
+//@version=6
+strategy(title="Wolf V4.3 Trade Test Patch - الملفات الستة", shorttitle="Wolf V4.3 Test Patch", overlay=true, pyramiding=0, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=1, calc_on_every_tick=false, max_boxes_count=200, max_labels_count=300, max_lines_count=150)
+
+//====================================================
+// 1) الإعدادات من الملفات فقط
+//====================================================
+biasTf      = input.timeframe("D", "فريم الاتجاه Daily")
+zoneTf      = input.timeframe("240", "فريم مناطق H4")
+pipSize     = input.float(0.0001, "حجم النقطة Pip Size", step=0.00001)
+spreadPips  = input.float(1.0, "السبريد بالنقاط", step=0.1)
+
+confirmMode = input.string("سوبر أو ابتلاع M15", "تأكيد الدخول M15", options=["سوبر فقط", "ابتلاع فقط", "سوبر أو ابتلاع M15"])
+targetMode  = input.string("أقرب منطقة H4", "طريقة الهدف", options=["أقرب منطقة H4", "فيبو 127", "فيبو 161.8"])
+
+useHTFAlignment  = input.bool(false, "فلتر توافق Monthly / Weekly / Daily")
+useFibFilter     = input.bool(false, "تفعيل فلتر فيبو 50% - 61.8%")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسات")
+useFresh25       = input.bool(true, "Fresh: لا يتجاوز الدخول 25% من المنطقة")
+usePCP3          = input.bool(true, "PCP: الهدف لا يقل عن 3:1")
+useStrictH4Zone  = input.bool(false, "تفعيل شروط H4: شمعتين بدون لمس + حركة 2x")
+useBrokeSwingFilter = input.bool(false, "اختبار: اشتراط كسر سوينغ H4")
+fallbackRR = input.float(2.0, "اختبار: هدف بديل RR عند عدم وجود هدف H4", minval=1.0, step=0.5)
+
+londonSess = input.session("0630-0800", "لندن UTC: نصف ساعة قبل + ساعة بعد")
+nySess     = input.session("1200-1330", "نيويورك UTC: نصف ساعة قبل + ساعة بعد")
+
+maxContextBars = input.int(96, "صلاحية سياق H4 بعد اللمس بعدد شموع M15", minval=1)
+
+showZones       = input.bool(true, "إظهار مناطق H4")
+showTradeLabels = input.bool(true, "إظهار ملصقات الدخول الفعلي")
+showContextDots = input.bool(true, "إظهار نقاط السياق فقط")
+showTable       = input.bool(true, "إظهار لوحة البيانات")
+
+pivotLen = 2
+
+//====================================================
+// 2) أدوات مساعدة
+//====================================================
+pips(x) =>
+    x * pipSize
+
+spreadPrice = pips(spreadPips)
+entryOffset = pips(2.0)
+
+//====================================================
+// 3) اتجاهات Monthly / Weekly / Daily
+//====================================================
+monthlyClose = request.security(syminfo.tickerid, "M", close, barmerge.gaps_off, barmerge.lookahead_off)
+monthlyPH    = request.security(syminfo.tickerid, "M", ta.pivothigh(high, pivotLen, pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+monthlyPL    = request.security(syminfo.tickerid, "M", ta.pivotlow(low, pivotLen, pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+weeklyClose = request.security(syminfo.tickerid, "W", close, barmerge.gaps_off, barmerge.lookahead_off)
+weeklyPH    = request.security(syminfo.tickerid, "W", ta.pivothigh(high, pivotLen, pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+weeklyPL    = request.security(syminfo.tickerid, "W", ta.pivotlow(low, pivotLen, pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+dailyClose = request.security(syminfo.tickerid, biasTf, close, barmerge.gaps_off, barmerge.lookahead_off)
+dailyPH    = request.security(syminfo.tickerid, biasTf, ta.pivothigh(high, pivotLen, pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+dailyPL    = request.security(syminfo.tickerid, biasTf, ta.pivotlow(low, pivotLen, pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+var float lastMonthlyPH = na
+var float lastMonthlyPL = na
+var int monthlyBias = 0
+
+var float lastWeeklyPH = na
+var float lastWeeklyPL = na
+var int weeklyBias = 0
+
+var float lastDailyPH = na
+var float lastDailyPL = na
+var int dailyBias = 0
+
+if not na(monthlyPH)
+    lastMonthlyPH := monthlyPH
+if not na(monthlyPL)
+    lastMonthlyPL := monthlyPL
+if not na(lastMonthlyPH) and monthlyClose > lastMonthlyPH
+    monthlyBias := 1
+if not na(lastMonthlyPL) and monthlyClose < lastMonthlyPL
+    monthlyBias := -1
+
+if not na(weeklyPH)
+    lastWeeklyPH := weeklyPH
+if not na(weeklyPL)
+    lastWeeklyPL := weeklyPL
+if not na(lastWeeklyPH) and weeklyClose > lastWeeklyPH
+    weeklyBias := 1
+if not na(lastWeeklyPL) and weeklyClose < lastWeeklyPL
+    weeklyBias := -1
+
+if not na(dailyPH)
+    lastDailyPH := dailyPH
+if not na(dailyPL)
+    lastDailyPL := dailyPL
+if not na(lastDailyPH) and dailyClose > lastDailyPH
+    dailyBias := 1
+if not na(lastDailyPL) and dailyClose < lastDailyPL
+    dailyBias := -1
+
+biasTxt(x) =>
+    x == 1 ? "صاعد" : x == -1 ? "هابط" : "محايد"
+
+dailyTxt   = biasTxt(dailyBias)
+weeklyTxt  = biasTxt(weeklyBias)
+monthlyTxt = biasTxt(monthlyBias)
+
+longHTFOK  = not useHTFAlignment or (monthlyBias == 1 and weeklyBias != -1 and dailyBias == 1)
+shortHTFOK = not useHTFAlignment or (monthlyBias == -1 and weeklyBias != 1 and dailyBias == -1)
+
+//====================================================
+// 4) مناطق H4 Visual-Based من الملف الخامس
+// Demand: أقل ذيل إلى أعلى جسم مشترك
+// Supply: أعلى ذيل إلى أقل جسم مشترك
+// + عدم لمس شمعتين تاليتين + تحرك 2x
+//====================================================
+f_h4ZonesVisual() =>
+    cBull = close[2] > open[2]
+    cBear = close[2] < open[2]
+    pBull = close[3] > open[3]
+    pBear = close[3] < open[3]
+
+    cBodyHigh = math.max(open[2], close[2])
+    cBodyLow  = math.min(open[2], close[2])
+    pBodyHigh = math.max(open[3], close[3])
+    pBodyLow  = math.min(open[3], close[3])
+
+    bodyEngulf = cBodyHigh >= pBodyHigh and cBodyLow <= pBodyLow
+
+    phLocal = ta.pivothigh(high, pivotLen, pivotLen)
+    plLocal = ta.pivotlow(low, pivotLen, pivotLen)
+
+    lastPHAtCandidate = ta.valuewhen(not na(phLocal), phLocal, 0)[2]
+    lastPLAtCandidate = ta.valuewhen(not na(plLocal), plLocal, 0)[2]
+
+    demandCandidate = cBull and pBear and bodyEngulf and close[2] > high[3]
+    supplyCandidate = cBear and pBull and bodyEngulf and close[2] < low[3]
+
+    demandTop = pBodyHigh
+    demandBot = math.min(low[2], low[3])
+    demandSize = demandTop - demandBot
+
+    supplyTop = math.max(high[2], high[3])
+    supplyBot = pBodyLow
+    supplySize = supplyTop - supplyBot
+
+    dTouch1 = low[1] <= demandTop and high[1] >= demandBot
+    dTouch2 = low <= demandTop and high >= demandBot
+    sTouch1 = high[1] >= supplyBot and low[1] <= supplyTop
+    sTouch2 = high >= supplyBot and low <= supplyTop
+
+    demandNoTouch2 = not dTouch1 and not dTouch2
+    supplyNoTouch2 = not sTouch1 and not sTouch2
+
+    demandMove2x = ta.highest(high, 2) >= demandTop + demandSize * 2.0
+    supplyMove2x = ta.lowest(low, 2) <= supplyBot - supplySize * 2.0
+
+    demandBrokeSwing = demandCandidate and not na(lastPHAtCandidate) and close[2] > lastPHAtCandidate
+    supplyBrokeSwing = supplyCandidate and not na(lastPLAtCandidate) and close[2] < lastPLAtCandidate
+
+    demandValid = demandCandidate and demandSize > 0 and (not useStrictH4Zone or (demandNoTouch2 and demandMove2x))
+    supplyValid = supplyCandidate and supplySize > 0 and (not useStrictH4Zone or (supplyNoTouch2 and supplyMove2x))
+
+    [demandValid, demandTop, demandBot, demandBrokeSwing, supplyValid, supplyTop, supplyBot, supplyBrokeSwing, time[2]]
+
+[h4DemandTrig, h4DemandTop, h4DemandBot, h4DemandBroke, h4SupplyTrig, h4SupplyTop, h4SupplyBot, h4SupplyBroke, h4Time] = request.security(syminfo.tickerid, zoneTf, f_h4ZonesVisual(), barmerge.gaps_off, barmerge.lookahead_off)
+
+var float activeDemandTop = na
+var float activeDemandBot = na
+var bool activeDemandBroke = false
+var bool activeDemandFresh = false
+var int lastDemandTime = na
+
+var float activeSupplyTop = na
+var float activeSupplyBot = na
+var bool activeSupplyBroke = false
+var bool activeSupplyFresh = false
+var int lastSupplyTime = na
+
+var box demandBox = na
+var box supplyBox = na
+
+var demandTops = array.new_float()
+var demandBots = array.new_float()
+var supplyTops = array.new_float()
+var supplyBots = array.new_float()
+
+newDemand = h4DemandTrig and (na(lastDemandTime) or h4Time != lastDemandTime)
+newSupply = h4SupplyTrig and (na(lastSupplyTime) or h4Time != lastSupplyTime)
+
+if newDemand
+    lastDemandTime := h4Time
+    activeDemandTop := h4DemandTop
+    activeDemandBot := h4DemandBot
+    activeDemandBroke := h4DemandBroke
+    activeDemandFresh := true
+
+    array.unshift(demandTops, activeDemandTop)
+    array.unshift(demandBots, activeDemandBot)
+
+    if array.size(demandTops) > 40
+        array.pop(demandTops)
+        array.pop(demandBots)
+
+    if showZones
+        if not na(demandBox)
+            box.delete(demandBox)
+        demandBox := box.new(left=bar_index, top=activeDemandTop, right=bar_index + 250, bottom=activeDemandBot, bgcolor=color.new(color.green, 88), border_color=color.new(color.green, 25), text="Demand H4", text_color=color.white)
+
+if newSupply
+    lastSupplyTime := h4Time
+    activeSupplyTop := h4SupplyTop
+    activeSupplyBot := h4SupplyBot
+    activeSupplyBroke := h4SupplyBroke
+    activeSupplyFresh := true
+
+    array.unshift(supplyTops, activeSupplyTop)
+    array.unshift(supplyBots, activeSupplyBot)
+
+    if array.size(supplyTops) > 40
+        array.pop(supplyTops)
+        array.pop(supplyBots)
+
+    if showZones
+        if not na(supplyBox)
+            box.delete(supplyBox)
+        supplyBox := box.new(left=bar_index, top=activeSupplyTop, right=bar_index + 250, bottom=activeSupplyBot, bgcolor=color.new(color.red, 88), border_color=color.new(color.red, 25), text="Supply H4", text_color=color.white)
+
+if showZones
+    if not na(demandBox)
+        box.set_right(demandBox, bar_index + 250)
+    if not na(supplyBox)
+        box.set_right(supplyBox, bar_index + 250)
+
+//====================================================
+// 5) أقرب منطقة H4 معاكسة
+//====================================================
+f_nearestSupplyAbove(price) =>
+    float nearest = na
+    int sz = array.size(supplyBots)
+    if not na(price) and sz > 0
+        for i = 0 to sz - 1
+            candidate = array.get(supplyBots, i)
+            if candidate > price
+                nearest := na(nearest) ? candidate : math.min(nearest, candidate)
+    nearest
+
+f_nearestDemandBelow(price) =>
+    float nearest = na
+    int sz = array.size(demandTops)
+    if not na(price) and sz > 0
+        for i = 0 to sz - 1
+            candidate = array.get(demandTops, i)
+            if candidate < price
+                nearest := na(nearest) ? candidate : math.max(nearest, candidate)
+    nearest
+
+//====================================================
+// 6) مناطق M15 من الابتلاع Visual-Based
+//====================================================
+bull = close > open
+bear = close < open
+prevBull = close[1] > open[1]
+prevBear = close[1] < open[1]
+
+bodyHigh     = math.max(open, close)
+bodyLow      = math.min(open, close)
+prevBodyHigh = math.max(open[1], close[1])
+prevBodyLow  = math.min(open[1], close[1])
+
+bodyEngulf = bodyHigh >= prevBodyHigh and bodyLow <= prevBodyLow
+
+m15Demand = bull and prevBear and bodyEngulf and close > high[1]
+m15Supply = bear and prevBull and bodyEngulf and close < low[1]
+
+m15DemandProximal = prevBodyHigh
+m15DemandDistal   = math.min(low, low[1])
+
+m15SupplyProximal = prevBodyLow
+m15SupplyDistal   = math.max(high, high[1])
+
+//====================================================
+// 7) السوبر M15
+//====================================================
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+
+var float bullPrevLow = na
+var float bullLastLow = na
+var float bullNeckline = na
+var bool bullPending = false
+var float lastConfirmedHigh = na
+
+var float bearPrevHigh = na
+var float bearLastHigh = na
+var float bearNeckline = na
+var bool bearPending = false
+var float lastConfirmedLow = na
+
+if not na(ph)
+    lastConfirmedHigh := ph
+    bearPrevHigh := bearLastHigh
+    bearLastHigh := ph
+    if not na(bearPrevHigh) and not na(lastConfirmedLow) and ph > bearPrevHigh
+        bearPending := true
+        bearNeckline := lastConfirmedLow
+
+if not na(pl)
+    lastConfirmedLow := pl
+    bullPrevLow := bullLastLow
+    bullLastLow := pl
+    if not na(bullPrevLow) and not na(lastConfirmedHigh) and pl < bullPrevLow
+        bullPending := true
+        bullNeckline := lastConfirmedHigh
+
+bullSuper = bullPending and not na(bullNeckline) and close > bullNeckline
+bearSuper = bearPending and not na(bearNeckline) and close < bearNeckline
+
+if bullSuper
+    bullPending := false
+
+if bearSuper
+    bearPending := false
+
+//====================================================
+// 8) فيبو 50 / 61.8 + أهداف فيبو
+//====================================================
+dailyRange = not na(lastDailyPH) and not na(lastDailyPL) ? math.abs(lastDailyPH - lastDailyPL) : na
+
+fibLongRet  = not na(dailyRange) and dailyRange > 0 ? (lastDailyPH - close) / dailyRange : na
+fibShortRet = not na(dailyRange) and dailyRange > 0 ? (close - lastDailyPL) / dailyRange : na
+
+fibLongOK  = not useFibFilter or (not na(fibLongRet) and fibLongRet >= 0.50 and fibLongRet <= 0.618)
+fibShortOK = not useFibFilter or (not na(fibShortRet) and fibShortRet >= 0.50 and fibShortRet <= 0.618)
+
+fib127Long = not na(dailyRange) and not na(lastDailyPL) ? lastDailyPL + dailyRange * 1.27 : na
+fib161Long = not na(dailyRange) and not na(lastDailyPL) ? lastDailyPL + dailyRange * 1.618 : na
+
+fib127Short = not na(dailyRange) and not na(lastDailyPH) ? lastDailyPH - dailyRange * 1.27 : na
+fib161Short = not na(dailyRange) and not na(lastDailyPH) ? lastDailyPH - dailyRange * 1.618 : na
+
+//====================================================
+// 9) فلتر الجلسات
+//====================================================
+inLondon = not na(time(timeframe.period, londonSess, "Etc/UTC"))
+inNY = not na(time(timeframe.period, nySess, "Etc/UTC"))
+inSession = not useSessionFilter or inLondon or inNY
+
+//====================================================
+// 10) State-Based Context
+//====================================================
+demandHeight = not na(activeDemandTop) and not na(activeDemandBot) ? activeDemandTop - activeDemandBot : na
+supplyHeight = not na(activeSupplyTop) and not na(activeSupplyBot) ? activeSupplyTop - activeSupplyBot : na
+
+priceInDemand = not na(activeDemandTop) and not na(activeDemandBot) and low <= activeDemandTop and high >= activeDemandBot
+priceInSupply = not na(activeSupplyTop) and not na(activeSupplyBot) and high >= activeSupplyBot and low <= activeSupplyTop
+
+freshDemand25OK = not useFresh25 or (not na(demandHeight) and demandHeight > 0 and low >= activeDemandTop - demandHeight * 0.25)
+freshSupply25OK = not useFresh25 or (not na(supplyHeight) and supplyHeight > 0 and high <= activeSupplyBot + supplyHeight * 0.25)
+
+var bool longContext = false
+var bool shortContext = false
+var int longContextBar = na
+var int shortContextBar = na
+
+longContextStart = longHTFOK and (not useBrokeSwingFilter or activeDemandBroke) and activeDemandFresh and priceInDemand and freshDemand25OK and inSession and fibLongOK
+shortContextStart = shortHTFOK and (not useBrokeSwingFilter or activeSupplyBroke) and activeSupplyFresh and priceInSupply and freshSupply25OK and inSession and fibShortOK
+
+if longContextStart and strategy.position_size == 0
+    longContext := true
+    shortContext := false
+    longContextBar := bar_index
+    activeDemandFresh := false
+
+if shortContextStart and strategy.position_size == 0
+    shortContext := true
+    longContext := false
+    shortContextBar := bar_index
+    activeSupplyFresh := false
+
+longContextExpired = longContext and not na(longContextBar) and bar_index - longContextBar > maxContextBars
+shortContextExpired = shortContext and not na(shortContextBar) and bar_index - shortContextBar > maxContextBars
+
+if longContextExpired
+    longContext := false
+
+if shortContextExpired
+    shortContext := false
+
+if longContext and not na(activeDemandBot) and close < activeDemandBot
+    longContext := false
+
+if shortContext and not na(activeSupplyTop) and close > activeSupplyTop
+    shortContext := false
+
+//====================================================
+// 11) تأكيد M15 بعد تفعيل السياق
+//====================================================
+longConfirmSuper = bullSuper
+shortConfirmSuper = bearSuper
+
+longConfirmEngulf = m15Demand
+shortConfirmEngulf = m15Supply
+
+bool longConfirm = false
+bool shortConfirm = false
+
+if confirmMode == "سوبر فقط"
+    longConfirm := longConfirmSuper
+    shortConfirm := shortConfirmSuper
+
+if confirmMode == "ابتلاع فقط"
+    longConfirm := longConfirmEngulf
+    shortConfirm := shortConfirmEngulf
+
+if confirmMode == "سوبر أو ابتلاع M15"
+    longConfirm := longConfirmSuper or longConfirmEngulf
+    shortConfirm := shortConfirmSuper or shortConfirmEngulf
+
+//====================================================
+// 12) دخول ووقف من M15
+//====================================================
+longEntryFromEngulf = m15DemandProximal + entryOffset + spreadPrice
+longSLFromEngulf    = m15DemandDistal
+
+shortEntryFromEngulf = m15SupplyProximal - entryOffset
+shortSLFromEngulf    = m15SupplyDistal + spreadPrice
+
+longEntryFromSuper = not na(bullNeckline) ? bullNeckline + entryOffset + spreadPrice : na
+longSLFromSuper    = not na(bullLastLow) ? bullLastLow : na
+
+shortEntryFromSuper = not na(bearNeckline) ? bearNeckline - entryOffset : na
+shortSLFromSuper    = not na(bearLastHigh) ? bearLastHigh + spreadPrice : na
+
+useLongSuperEntry = longConfirmSuper
+useShortSuperEntry = shortConfirmSuper
+
+longEntry = useLongSuperEntry and not na(longEntryFromSuper) ? longEntryFromSuper : longEntryFromEngulf
+longSL    = useLongSuperEntry and not na(longSLFromSuper) ? longSLFromSuper : longSLFromEngulf
+
+shortEntry = useShortSuperEntry and not na(shortEntryFromSuper) ? shortEntryFromSuper : shortEntryFromEngulf
+shortSL    = useShortSuperEntry and not na(shortSLFromSuper) ? shortSLFromSuper : shortSLFromEngulf
+
+longTargetH4 = f_nearestSupplyAbove(longEntry)
+shortTargetH4 = f_nearestDemandBelow(shortEntry)
+
+longRawTarget = targetMode == "أقرب منطقة H4" ? longTargetH4 : targetMode == "فيبو 127" ? fib127Long : fib161Long
+shortRawTarget = targetMode == "أقرب منطقة H4" ? shortTargetH4 : targetMode == "فيبو 127" ? fib127Short : fib161Short
+
+longRisk = not na(longEntry) and not na(longSL) ? longEntry - longSL : na
+shortRisk = not na(shortEntry) and not na(shortSL) ? shortSL - shortEntry : na
+
+longFallbackTarget = not na(longRisk) and longRisk > 0 ? longEntry + longRisk * fallbackRR : na
+shortFallbackTarget = not na(shortRisk) and shortRisk > 0 ? shortEntry - shortRisk * fallbackRR : na
+
+longTarget = not na(longRawTarget) ? longRawTarget : longFallbackTarget
+shortTarget = not na(shortRawTarget) ? shortRawTarget : shortFallbackTarget
+
+longReward = not na(longTarget) and not na(longEntry) ? longTarget - longEntry : na
+shortReward = not na(shortTarget) and not na(shortEntry) ? shortEntry - shortTarget : na
+
+longPCPOK = not usePCP3 or (not na(longRisk) and not na(longReward) and longRisk > 0 and longReward / longRisk >= 3.0)
+shortPCPOK = not usePCP3 or (not na(shortRisk) and not na(shortReward) and shortRisk > 0 and shortReward / shortRisk >= 3.0)
+
+longSetup = longContext and longConfirm and longPCPOK and not na(longEntry) and not na(longSL) and not na(longTarget) and longSL < longEntry and longTarget > longEntry
+shortSetup = shortContext and shortConfirm and shortPCPOK and not na(shortEntry) and not na(shortSL) and not na(shortTarget) and shortSL > shortEntry and shortTarget < shortEntry
+
+//====================================================
+// 13) أوامر الدخول
+//====================================================
+var bool pendingLong = false
+var bool pendingShort = false
+var float pendingLongEntry = na
+var float pendingLongSL = na
+var float pendingLongTP = na
+var float pendingShortEntry = na
+var float pendingShortSL = na
+var float pendingShortTP = na
+
+if longSetup and strategy.position_size == 0
+    pendingLong := true
+    pendingShort := false
+    pendingLongEntry := longEntry
+    pendingLongSL := longSL
+    pendingLongTP := longTarget
+    longContext := false
+    strategy.cancel("بيع")
+
+if shortSetup and strategy.position_size == 0
+    pendingShort := true
+    pendingLong := false
+    pendingShortEntry := shortEntry
+    pendingShortSL := shortSL
+    pendingShortTP := shortTarget
+    shortContext := false
+    strategy.cancel("شراء")
+
+if pendingLong and strategy.position_size == 0
+    strategy.entry("شراء", strategy.long, limit=pendingLongEntry)
+    strategy.exit("خروج شراء", from_entry="شراء", stop=pendingLongSL, limit=pendingLongTP)
+
+if pendingShort and strategy.position_size == 0
+    strategy.entry("بيع", strategy.short, limit=pendingShortEntry)
+    strategy.exit("خروج بيع", from_entry="بيع", stop=pendingShortSL, limit=pendingShortTP)
+
+if pendingLong and not na(activeDemandBot) and close < activeDemandBot
+    strategy.cancel("شراء")
+    pendingLong := false
+
+if pendingShort and not na(activeSupplyTop) and close > activeSupplyTop
+    strategy.cancel("بيع")
+    pendingShort := false
+
+if strategy.position_size > 0
+    pendingLong := false
+
+if strategy.position_size < 0
+    pendingShort := false
+
+//====================================================
+// 14) الرسومات
+//====================================================
+plot(activeDemandTop, "H4 Demand Proximal", color=color.new(color.green, 0), linewidth=1)
+plot(activeDemandBot, "H4 Demand Distal", color=color.new(color.green, 65), linewidth=1)
+
+plot(activeSupplyTop, "H4 Supply Distal", color=color.new(color.red, 65), linewidth=1)
+plot(activeSupplyBot, "H4 Supply Proximal", color=color.new(color.red, 0), linewidth=1)
+
+plot(pendingLong ? pendingLongEntry : na, "دخول شراء", color=color.new(color.lime, 0), linewidth=2, style=plot.style_linebr)
+plot(pendingLong ? pendingLongSL : na, "وقف شراء", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(pendingLong ? pendingLongTP : na, "هدف شراء", color=color.new(color.blue, 0), linewidth=2, style=plot.style_linebr)
+
+plot(pendingShort ? pendingShortEntry : na, "دخول بيع", color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+plot(pendingShort ? pendingShortSL : na, "وقف بيع", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(pendingShort ? pendingShortTP : na, "هدف بيع", color=color.new(color.blue, 0), linewidth=2, style=plot.style_linebr)
+
+plotshape(showContextDots and longContextStart, title="سياق شراء فقط", style=shape.circle, location=location.belowbar, color=color.new(color.green, 35), size=size.tiny)
+plotshape(showContextDots and shortContextStart, title="سياق بيع فقط", style=shape.circle, location=location.abovebar, color=color.new(color.red, 35), size=size.tiny)
+
+// Debug: لمعرفة أين يتوقف منطق الدخول
+plotshape(showContextDots and longConfirm, title="DEBUG تأكيد شراء M15", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="LC")
+plotshape(showContextDots and shortConfirm, title="DEBUG تأكيد بيع M15", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="SC")
+plotshape(showContextDots and longSetup, title="DEBUG إعداد شراء نهائي", style=shape.labelup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="LS")
+plotshape(showContextDots and shortSetup, title="DEBUG إعداد بيع نهائي", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), size=size.tiny, text="SS")
+
+if showTradeLabels and longSetup
+    label.new(bar_index, low, "دخول شراء فعلي ✅\nتأكيد M15\nوقف LTF\nهدف: " + targetMode, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white)
+
+if showTradeLabels and shortSetup
+    label.new(bar_index, high, "دخول بيع فعلي ✅\nتأكيد M15\nوقف LTF\nهدف: " + targetMode, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white)
+
+//====================================================
+//====================================================
+// 15) لوحة عربية محسّنة + إحصائيات الباك تست
+//====================================================
+var table info = table.new(position.top_right, 2, 24, border_width=1)
+
+fmt(x) =>
+    na(x) ? "—" : str.tostring(x, format.mintick)
+
+fmtMoney(x) =>
+    str.tostring(x, "#.##") + " USD"
+
+fmtPct(x) =>
+    na(x) ? "—" : str.tostring(x, "#.##") + "%"
+
+biasColor(x) =>
+    x == 1 ? color.new(color.green, 65) : x == -1 ? color.new(color.red, 65) : color.new(color.gray, 75)
+
+valueColor(txt) =>
+    txt == "لا يوجد" or txt == "خارج H4" or txt == "معطل" ? color.new(color.gray, 80) : color.new(color.blue, 78)
+
+metricColor(x) =>
+    x > 0 ? color.new(color.green, 65) : x < 0 ? color.new(color.red, 65) : color.new(color.gray, 80)
+
+row(_r, _name, _val, _bg) =>
+    table.cell(info, 0, _r, _name, bgcolor=color.new(color.black, 8), text_color=color.white)
+    table.cell(info, 1, _r, _val, bgcolor=_bg, text_color=color.white)
+
+closedTrades = strategy.closedtrades
+winTrades    = strategy.wintrades
+lossTrades   = strategy.losstrades
+flatTrades   = closedTrades - winTrades - lossTrades
+
+winRate = closedTrades > 0 ? winTrades / closedTrades * 100.0 : na
+
+grossProfit = strategy.grossprofit
+grossLoss   = math.abs(strategy.grossloss)
+netProfit   = strategy.netprofit
+openProfit  = strategy.openprofit
+
+profitFactorTxt =
+     grossLoss > 0 ? str.tostring(grossProfit / grossLoss, "#.##") :
+     grossProfit > 0 ? "لا خسائر" :
+     "—"
+
+contextTxt = longContext ? "سياق شراء مفعل" : shortContext ? "سياق بيع مفعل" : "لا يوجد"
+pendingTxt = pendingLong ? "شراء معلق" : pendingShort ? "بيع معلق" : "لا يوجد"
+zoneTxt = priceInDemand ? "داخل Demand H4" : priceInSupply ? "داخل Supply H4" : "خارج H4"
+sessionTxt = useSessionFilter ? (inSession ? "داخل الجلسة" : "خارج الجلسة") : "معطل"
+fibTxt = useFibFilter ? "مفعل" : "معطل"
+htfTxt = useHTFAlignment ? "مفعل" : "معطل"
+pcpTxt = usePCP3 ? "مفعل 3:1" : "معطل"
+
+positionTxt =
+     strategy.position_size > 0 ? "شراء مفتوح" :
+     strategy.position_size < 0 ? "بيع مفتوح" :
+     "لا توجد صفقة"
+
+entryTxt =
+     strategy.position_size != 0 ? fmt(strategy.position_avg_price) :
+     pendingLong ? fmt(pendingLongEntry) :
+     pendingShort ? fmt(pendingShortEntry) :
+     "—"
+
+slTpTxt =
+     strategy.position_size > 0 ? fmt(pendingLongSL) + " / " + fmt(pendingLongTP) :
+     strategy.position_size < 0 ? fmt(pendingShortSL) + " / " + fmt(pendingShortTP) :
+     pendingLong ? fmt(pendingLongSL) + " / " + fmt(pendingLongTP) :
+     pendingShort ? fmt(pendingShortSL) + " / " + fmt(pendingShortTP) :
+     "—"
+
+if showTable
+    table.cell(info, 0, 0, "البند", bgcolor=color.rgb(255, 153, 0), text_color=color.black)
+    table.cell(info, 1, 0, "القيمة", bgcolor=color.rgb(255, 153, 0), text_color=color.black)
+
+    row(1,  "الإطار", "M / W / D / H4 / M15", color.new(color.navy, 65))
+    row(2,  "Monthly", monthlyTxt, biasColor(monthlyBias))
+    row(3,  "Weekly", weeklyTxt, biasColor(weeklyBias))
+    row(4,  "Daily", dailyTxt, biasColor(dailyBias))
+    row(5,  "توافق الفريمات", htfTxt, valueColor(htfTxt))
+
+    row(6,  "موقع السعر", zoneTxt, zoneTxt == "داخل Demand H4" ? color.new(color.green, 65) : zoneTxt == "داخل Supply H4" ? color.new(color.red, 65) : color.new(color.gray, 80))
+    row(7,  "سياق H4", contextTxt, contextTxt == "سياق شراء مفعل" ? color.new(color.green, 65) : contextTxt == "سياق بيع مفعل" ? color.new(color.red, 65) : color.new(color.gray, 80))
+    row(8,  "Fresh Demand", activeDemandFresh ? "نعم" : "لا", activeDemandFresh ? color.new(color.green, 70) : color.new(color.red, 75))
+    row(9,  "Fresh Supply", activeSupplyFresh ? "نعم" : "لا", activeSupplyFresh ? color.new(color.green, 70) : color.new(color.red, 75))
+
+    row(10, "تأكيد M15", confirmMode, color.new(color.purple, 75))
+    row(11, "فيبو / جلسة", fibTxt + " / " + sessionTxt, color.new(color.blue, 78))
+    row(12, "PCP", pcpTxt, usePCP3 ? color.new(color.orange, 60) : color.new(color.gray, 80))
+
+    table.cell(info, 0, 13, "إحصائيات", bgcolor=color.rgb(255, 153, 0), text_color=color.black)
+    table.cell(info, 1, 13, "Backtest", bgcolor=color.rgb(255, 153, 0), text_color=color.black)
+
+    row(14, "إجمالي الصفقات", str.tostring(closedTrades), color.new(color.blue, 70))
+    row(15, "الرابحة", str.tostring(winTrades), color.new(color.green, 65))
+    row(16, "الخاسرة", str.tostring(lossTrades), color.new(color.red, 65))
+    row(17, "تعادل", str.tostring(flatTrades), color.new(color.gray, 75))
+    row(18, "نسبة الفوز", fmtPct(winRate), color.new(color.teal, 65))
+    row(19, "عامل الربح", profitFactorTxt, color.new(color.purple, 70))
+    row(20, "صافي الربح", fmtMoney(netProfit), metricColor(netProfit))
+    row(21, "الربح المفتوح", fmtMoney(openProfit), metricColor(openProfit))
+
+    row(22, "المركز الحالي", positionTxt, strategy.position_size > 0 ? color.new(color.green, 65) : strategy.position_size < 0 ? color.new(color.red, 65) : color.new(color.gray, 80))
+    row(23, "دخول / وقف / هدف", entryTxt + " | " + slTpTxt, color.new(color.black, 0))

@@ -1,0 +1,338 @@
+//@version=6
+strategy("SMC ICT - FVG OB Liquidity - Riyadh v6 / استراتيجية SMC ICT الرياض", overlay=true,
+     initial_capital=10000, currency=currency.USD,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0,
+     margin_long=0.25, margin_short=0.25,
+     process_orders_on_close=true, max_boxes_count=50, max_lines_count=50, max_labels_count=100)
+
+// ============================================================
+// 1. Inputs
+// ============================================================
+enableLong = input.bool(true, "تفعيل صفقات الشراء", group="1. الإعدادات العامة")
+enableShort = input.bool(true, "تفعيل صفقات البيع", group="1. الإعدادات العامة")
+confirmOnClose = input.bool(true, "تأكيد الإشارة بعد إغلاق الشمعة", group="1. الإعدادات العامة")
+minBarsBetweenSignals = input.int(10, "أقل عدد شموع بين الصفقات", minval=0, group="1. الإعدادات العامة")
+
+useSessionFilter = input.bool(true, "تفعيل فلتر الجلسات بتوقيت الرياض", group="2. فلتر الوقت")
+riyadhTimezone = input.string("Asia/Riyadh", "المنطقة الزمنية", group="2. فلتر الوقت")
+sessionOne = input.session("1000-1300", "الجلسة الأولى - الرياض", group="2. فلتر الوقت")
+sessionTwo = input.session("1530-1800", "الجلسة الثانية - الرياض", group="2. فلتر الوقت")
+
+pivotLeft = input.int(3, "شموع يسار القمة/القاع", minval=1, maxval=20, group="3. هيكل السوق")
+pivotRight = input.int(3, "شموع يمين القمة/القاع", minval=1, maxval=20, group="3. هيكل السوق")
+structureLookback = input.int(50, "مدى Premium / Discount", minval=10, group="3. هيكل السوق")
+usePdFilter = input.bool(false, "استخدام فلتر Premium / Discount", group="3. هيكل السوق")
+
+liquidityLookback = input.int(20, "مدى البحث عن السيولة", minval=5, group="4. السيولة")
+sweepValidBars = input.int(8, "صلاحية سحب السيولة بالشموع", minval=1, group="4. السيولة")
+
+fvgValidBars = input.int(40, "صلاحية FVG بالشموع", minval=5, group="5. FVG")
+showFvgBoxes = input.bool(true, "عرض مناطق FVG", group="5. FVG")
+
+obLookback = input.int(20, "البحث عن آخر شمعة معاكسة للـ OB", minval=3, maxval=100, group="6. Order Block")
+obValidBars = input.int(60, "صلاحية Order Block بالشموع", minval=5, group="6. Order Block")
+showObBoxes = input.bool(true, "عرض مناطق Order Block", group="6. Order Block")
+
+minConfluence = input.int(3, "أقل عدد توافقات للدخول", minval=1, maxval=5, group="7. شروط الدخول")
+requireStructure = input.bool(true, "اشتراط BOS أو CHoCH", group="7. شروط الدخول")
+requireLiquidity = input.bool(true, "اشتراط سحب سيولة حديث", group="7. شروط الدخول")
+allowFvgEntry = input.bool(true, "السماح بالدخول من FVG", group="7. شروط الدخول")
+allowObEntry = input.bool(true, "السماح بالدخول من Order Block", group="7. شروط الدخول")
+
+riskPercent = input.float(1.0, "نسبة المخاطرة من رأس المال %", minval=0.1, maxval=10, step=0.1, group="8. إدارة المخاطر")
+pointValueUsd = input.float(10.0, "قيمة النقطة بالدولار", minval=0.01, step=0.01, group="8. إدارة المخاطر")
+rr = input.float(2.0, "نسبة العائد إلى المخاطرة", minval=0.2, step=0.1, group="8. إدارة المخاطر")
+stopMode = input.string("خلف السوينغ", "طريقة وقف الخسارة", options=["خلف السوينغ", "خلف OB", "ATR"], group="8. إدارة المخاطر")
+atrLength = input.int(14, "طول ATR", minval=1, group="8. إدارة المخاطر")
+atrMult = input.float(1.5, "مضاعف ATR للوقف", minval=0.1, step=0.1, group="8. إدارة المخاطر")
+maxQty = input.float(100.0, "أقصى حجم صفقة", minval=0.01, step=0.01, group="8. إدارة المخاطر")
+
+showLabels = input.bool(true, "عرض تسميات BOS / CHoCH", group="9. العرض")
+extendBoxes = input.int(30, "تمديد المناطق يمينًا", minval=1, group="9. العرض")
+
+// ============================================================
+// 2. Market Structure
+// ============================================================
+confirmed = confirmOnClose ? barstate.isconfirmed : true
+
+pivotHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+pivotLow = ta.pivotlow(low, pivotLeft, pivotRight)
+
+var float lastSwingHigh = na
+var float lastSwingLow = na
+var int lastSwingHighBar = na
+var int lastSwingLowBar = na
+
+if not na(pivotHigh)
+    lastSwingHigh := pivotHigh
+    lastSwingHighBar := bar_index - pivotRight
+
+if not na(pivotLow)
+    lastSwingLow := pivotLow
+    lastSwingLowBar := bar_index - pivotRight
+
+var int marketBias = 0
+crossUpStructure = confirmed and not na(lastSwingHigh) and close > lastSwingHigh and close[1] <= lastSwingHigh
+crossDownStructure = confirmed and not na(lastSwingLow) and close < lastSwingLow and close[1] >= lastSwingLow
+
+bullChoch = crossUpStructure and marketBias == -1
+bearChoch = crossDownStructure and marketBias == 1
+bullBos = crossUpStructure and marketBias != -1
+bearBos = crossDownStructure and marketBias != 1
+
+if crossUpStructure
+    marketBias := 1
+if crossDownStructure
+    marketBias := -1
+
+rangeHigh = ta.highest(high, structureLookback)
+rangeLow = ta.lowest(low, structureLookback)
+equilibrium = (rangeHigh + rangeLow) / 2.0
+inDiscount = close <= equilibrium
+inPremium = close >= equilibrium
+
+// ============================================================
+// 3. Liquidity Logic
+// ============================================================
+priorHigh = ta.highest(high, liquidityLookback)[1]
+priorLow = ta.lowest(low, liquidityLookback)[1]
+
+bullLiquiditySweep = confirmed and low < priorLow and close > priorLow and close > open
+bearLiquiditySweep = confirmed and high > priorHigh and close < priorHigh and close < open
+
+barsSinceBullSweep = ta.barssince(bullLiquiditySweep)
+barsSinceBearSweep = ta.barssince(bearLiquiditySweep)
+bullSweepRecent = not na(barsSinceBullSweep) and barsSinceBullSweep <= sweepValidBars
+bearSweepRecent = not na(barsSinceBearSweep) and barsSinceBearSweep <= sweepValidBars
+
+// ============================================================
+// 4. FVG Logic
+// ============================================================
+bullFvgNew = confirmed and low > high[2]
+bearFvgNew = confirmed and high < low[2]
+
+var float bullFvgTop = na
+var float bullFvgBottom = na
+var int bullFvgBar = na
+var bool bullFvgActive = false
+var box bullFvgBox = na
+
+var float bearFvgTop = na
+var float bearFvgBottom = na
+var int bearFvgBar = na
+var bool bearFvgActive = false
+var box bearFvgBox = na
+
+if bullFvgNew
+    bullFvgTop := low
+    bullFvgBottom := high[2]
+    bullFvgBar := bar_index
+    bullFvgActive := true
+    if showFvgBoxes
+        if not na(bullFvgBox)
+            box.delete(bullFvgBox)
+        bullFvgBox := box.new(bar_index - 2, bullFvgTop, bar_index + extendBoxes, bullFvgBottom, bgcolor=color.new(color.teal, 85), border_color=color.new(color.teal, 35))
+
+if bearFvgNew
+    bearFvgTop := low[2]
+    bearFvgBottom := high
+    bearFvgBar := bar_index
+    bearFvgActive := true
+    if showFvgBoxes
+        if not na(bearFvgBox)
+            box.delete(bearFvgBox)
+        bearFvgBox := box.new(bar_index - 2, bearFvgTop, bar_index + extendBoxes, bearFvgBottom, bgcolor=color.new(color.maroon, 85), border_color=color.new(color.maroon, 35))
+
+if bullFvgActive and bar_index - bullFvgBar > fvgValidBars
+    bullFvgActive := false
+if bearFvgActive and bar_index - bearFvgBar > fvgValidBars
+    bearFvgActive := false
+
+bullFvgRetest = bullFvgActive and bar_index > bullFvgBar and low <= bullFvgTop and high >= bullFvgBottom
+bearFvgRetest = bearFvgActive and bar_index > bearFvgBar and high >= bearFvgBottom and low <= bearFvgTop
+
+if not na(bullFvgBox)
+    box.set_right(bullFvgBox, bar_index + extendBoxes)
+if not na(bearFvgBox)
+    box.set_right(bearFvgBox, bar_index + extendBoxes)
+
+// ============================================================
+// 5. Order Block Logic
+// ============================================================
+var float bullObTop = na
+var float bullObBottom = na
+var int bullObBar = na
+var bool bullObActive = false
+var box bullObBox = na
+
+var float bearObTop = na
+var float bearObBottom = na
+var int bearObBar = na
+var bool bearObActive = false
+var box bearObBox = na
+
+if crossUpStructure
+    int foundBullOb = na
+    for i = 1 to obLookback
+        if na(foundBullOb) and close[i] < open[i]
+            foundBullOb := i
+    if not na(foundBullOb)
+        bullObTop := open[foundBullOb]
+        bullObBottom := low[foundBullOb]
+        bullObBar := bar_index - foundBullOb
+        bullObActive := true
+        if showObBoxes
+            if not na(bullObBox)
+                box.delete(bullObBox)
+            bullObBox := box.new(bullObBar, bullObTop, bar_index + extendBoxes, bullObBottom, bgcolor=color.new(color.green, 85), border_color=color.new(color.green, 30))
+
+if crossDownStructure
+    int foundBearOb = na
+    for i = 1 to obLookback
+        if na(foundBearOb) and close[i] > open[i]
+            foundBearOb := i
+    if not na(foundBearOb)
+        bearObTop := high[foundBearOb]
+        bearObBottom := open[foundBearOb]
+        bearObBar := bar_index - foundBearOb
+        bearObActive := true
+        if showObBoxes
+            if not na(bearObBox)
+                box.delete(bearObBox)
+            bearObBox := box.new(bearObBar, bearObTop, bar_index + extendBoxes, bearObBottom, bgcolor=color.new(color.red, 85), border_color=color.new(color.red, 30))
+
+if bullObActive and bar_index - bullObBar > obValidBars
+    bullObActive := false
+if bearObActive and bar_index - bearObBar > obValidBars
+    bearObActive := false
+
+bullObRetest = bullObActive and low <= bullObTop and high >= bullObBottom
+bearObRetest = bearObActive and high >= bearObBottom and low <= bearObTop
+
+if not na(bullObBox)
+    box.set_right(bullObBox, bar_index + extendBoxes)
+if not na(bearObBox)
+    box.set_right(bearObBox, bar_index + extendBoxes)
+
+// ============================================================
+// 6. Entry Conditions
+// ============================================================
+inSessionOne = not na(time(timeframe.period, sessionOne, riyadhTimezone))
+inSessionTwo = not na(time(timeframe.period, sessionTwo, riyadhTimezone))
+timeAllowed = not useSessionFilter or inSessionOne or inSessionTwo
+
+longStructureOk = bullBos or bullChoch or marketBias == 1
+shortStructureOk = bearBos or bearChoch or marketBias == -1
+longPdOk = not usePdFilter or inDiscount
+shortPdOk = not usePdFilter or inPremium
+
+longFvgScore = allowFvgEntry and bullFvgRetest ? 1 : 0
+longObScore = allowObEntry and bullObRetest ? 1 : 0
+longStructScore = longStructureOk ? 1 : 0
+longSweepScore = bullSweepRecent ? 1 : 0
+longPdScore = longPdOk ? 1 : 0
+
+shortFvgScore = allowFvgEntry and bearFvgRetest ? 1 : 0
+shortObScore = allowObEntry and bearObRetest ? 1 : 0
+shortStructScore = shortStructureOk ? 1 : 0
+shortSweepScore = bearSweepRecent ? 1 : 0
+shortPdScore = shortPdOk ? 1 : 0
+
+longScore = longFvgScore + longObScore + longStructScore + longSweepScore + longPdScore
+shortScore = shortFvgScore + shortObScore + shortStructScore + shortSweepScore + shortPdScore
+
+requiredLongRules = (not requireStructure or longStructureOk) and (not requireLiquidity or bullSweepRecent)
+requiredShortRules = (not requireStructure or shortStructureOk) and (not requireLiquidity or bearSweepRecent)
+
+var int lastSignalBar = na
+spacingOk = na(lastSignalBar) or bar_index - lastSignalBar >= minBarsBetweenSignals
+
+longSignal = confirmed and enableLong and timeAllowed and spacingOk and requiredLongRules and longPdOk and longScore >= minConfluence and strategy.position_size <= 0
+shortSignal = confirmed and enableShort and timeAllowed and spacingOk and requiredShortRules and shortPdOk and shortScore >= minConfluence and strategy.position_size >= 0
+
+// ============================================================
+// 7. Risk Management
+// ============================================================
+atrValue = ta.atr(atrLength)
+
+longSwingStop = na(lastSwingLow) ? close - atrValue * atrMult : lastSwingLow
+shortSwingStop = na(lastSwingHigh) ? close + atrValue * atrMult : lastSwingHigh
+longObStop = bullObActive and not na(bullObBottom) ? bullObBottom : longSwingStop
+shortObStop = bearObActive and not na(bearObTop) ? bearObTop : shortSwingStop
+
+longStopCandidate = stopMode == "خلف OB" ? longObStop : stopMode == "ATR" ? close - atrValue * atrMult : longSwingStop
+shortStopCandidate = stopMode == "خلف OB" ? shortObStop : stopMode == "ATR" ? close + atrValue * atrMult : shortSwingStop
+
+longStop = longStopCandidate < close ? longStopCandidate : close - atrValue * atrMult
+shortStop = shortStopCandidate > close ? shortStopCandidate : close + atrValue * atrMult
+
+longRisk = math.max(close - longStop, syminfo.mintick)
+shortRisk = math.max(shortStop - close, syminfo.mintick)
+longTarget = close + longRisk * rr
+shortTarget = close - shortRisk * rr
+
+riskCash = strategy.equity * riskPercent / 100.0
+longQty = math.min(maxQty, riskCash / (longRisk * pointValueUsd))
+shortQty = math.min(maxQty, riskCash / (shortRisk * pointValueUsd))
+
+var float activeLongStop = na
+var float activeLongTarget = na
+var float activeShortStop = na
+var float activeShortTarget = na
+
+// ============================================================
+// 8. Strategy Orders
+// ============================================================
+if longSignal
+    activeLongStop := longStop
+    activeLongTarget := longTarget
+    activeShortStop := na
+    activeShortTarget := na
+    strategy.entry("شراء", strategy.long, qty=longQty)
+    lastSignalBar := bar_index
+
+if shortSignal
+    activeShortStop := shortStop
+    activeShortTarget := shortTarget
+    activeLongStop := na
+    activeLongTarget := na
+    strategy.entry("بيع", strategy.short, qty=shortQty)
+    lastSignalBar := bar_index
+
+if strategy.position_size > 0
+    strategy.exit("خروج شراء", "شراء", stop=activeLongStop, limit=activeLongTarget)
+if strategy.position_size < 0
+    strategy.exit("خروج بيع", "بيع", stop=activeShortStop, limit=activeShortTarget)
+
+if strategy.position_size == 0 and not longSignal and not shortSignal
+    activeLongStop := na
+    activeLongTarget := na
+    activeShortStop := na
+    activeShortTarget := na
+
+// ============================================================
+// 9. Plots and Visuals
+// ============================================================
+plot(equilibrium, "منتصف النطاق Premium / Discount", color=color.new(color.gray, 55), linewidth=1)
+plot(activeLongStop, "وقف الشراء", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(activeLongTarget, "هدف الشراء", color=color.new(color.green, 0), style=plot.style_linebr)
+plot(activeShortStop, "وقف البيع", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(activeShortTarget, "هدف البيع", color=color.new(color.green, 0), style=plot.style_linebr)
+
+plotshape(bullLiquiditySweep, "سحب سيولة شراء", shape.circle, location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="LS")
+plotshape(bearLiquiditySweep, "سحب سيولة بيع", shape.circle, location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="LS")
+plotshape(longSignal, "إشارة شراء", shape.triangleup, location.belowbar, color=color.new(color.lime, 0), size=size.small, text="BUY")
+plotshape(shortSignal, "إشارة بيع", shape.triangledown, location.abovebar, color=color.new(color.red, 0), size=size.small, text="SELL")
+
+if showLabels and bullBos
+    label.new(bar_index, high, "BOS صاعد", style=label.style_label_down, textcolor=color.white, color=color.new(color.green, 0))
+if showLabels and bearBos
+    label.new(bar_index, low, "BOS هابط", style=label.style_label_up, textcolor=color.white, color=color.new(color.red, 0))
+if showLabels and bullChoch
+    label.new(bar_index, high, "CHoCH صاعد", style=label.style_label_down, textcolor=color.white, color=color.new(color.teal, 0))
+if showLabels and bearChoch
+    label.new(bar_index, low, "CHoCH هابط", style=label.style_label_up, textcolor=color.white, color=color.new(color.orange, 0))
+
+alertcondition(longSignal, "تنبيه شراء SMC ICT", "ظهرت إشارة شراء وفق نموذج SMC ICT البحثي")
+alertcondition(shortSignal, "تنبيه بيع SMC ICT", "ظهرت إشارة بيع وفق نموذج SMC ICT البحثي")

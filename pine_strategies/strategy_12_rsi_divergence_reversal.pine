@@ -1,0 +1,66 @@
+//@version=6
+strategy("12 - RSI Divergence Reversal", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: divergence يكتشف باستخدام pivots مؤكدة فقط، وCHoCH مبسط كإغلاق عكسي فوق/تحت آخر pivot مقابل بعد الديفرجنس.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بإشارات الشراء بعد bullish divergence.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بإشارات البيع بعد bearish divergence.")
+rsiLen = input.int(14, "طول RSI", minval = 1, maxval = 100, group = grp03, tooltip = "طول RSI المستخدم للديفرجنس.")
+pivotLen = input.int(5, "طول Pivot", minval = 2, maxval = 50, group = grp03, tooltip = "عدد الشموع لتأكيد قاع أو قمة الديفرجنس.")
+oversold = input.float(30.0, "مستوى التشبع البيعي", minval = 1.0, maxval = 50.0, group = grp03, tooltip = "يجب أن يكون RSI حول هذا المستوى للشراء.")
+overbought = input.float(70.0, "مستوى التشبع الشرائي", minval = 50.0, maxval = 99.0, group = grp03, tooltip = "يجب أن يكون RSI حول هذا المستوى للبيع.")
+requireChoch = input.bool(true, "اشتراط CHoCH مبسط", group = grp04, tooltip = "يشترط كسر pivot معاكس بعد الديفرجنس لتأكيد تغير الاتجاه.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف الخسارة الافتراضي لأن التقرير لم يذكر وقفًا محددًا.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف مقابل المخاطرة.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى الدخول بعد حركة ربح محددة.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة قبل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت التداول عند تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الدخول على الشارت.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+rsi = ta.rsi(close, rsiLen)
+priceLowPivot = ta.pivotlow(low, pivotLen, pivotLen)
+priceHighPivot = ta.pivothigh(high, pivotLen, pivotLen)
+rsiLowAtPivot = ta.valuewhen(not na(priceLowPivot), rsi[pivotLen], 0)
+rsiLowPrev = ta.valuewhen(not na(priceLowPivot), rsi[pivotLen], 1)
+priceLowPrev = ta.valuewhen(not na(priceLowPivot), priceLowPivot, 1)
+rsiHighAtPivot = ta.valuewhen(not na(priceHighPivot), rsi[pivotLen], 0)
+rsiHighPrev = ta.valuewhen(not na(priceHighPivot), rsi[pivotLen], 1)
+priceHighPrev = ta.valuewhen(not na(priceHighPivot), priceHighPivot, 1)
+bullDivNow = not na(priceLowPivot) and priceLowPivot < priceLowPrev and rsiLowAtPivot > rsiLowPrev and rsiLowAtPivot <= oversold
+bearDivNow = not na(priceHighPivot) and priceHighPivot > priceHighPrev and rsiHighAtPivot < rsiHighPrev and rsiHighAtPivot >= overbought
+var bool bullDivActive = false
+var bool bearDivActive = false
+if bullDivNow
+    bullDivActive := true
+if bearDivNow
+    bearDivActive := true
+lastOppHigh = ta.valuewhen(not na(priceHighPivot), priceHighPivot, 0)
+lastOppLow = ta.valuewhen(not na(priceLowPivot), priceLowPivot, 0)
+bullChoch = close > lastOppHigh
+bearChoch = close < lastOppLow
+longSignal = enableLong and inSession and bullDivActive and (not requireChoch or bullChoch)
+shortSignal = enableShort and inSession and bearDivActive and (not requireChoch or bearChoch)
+if longSignal
+    strategy.entry("شراء RSI Div", strategy.long)
+    bullDivActive := false
+if shortSignal
+    strategy.entry("بيع RSI Div", strategy.short)
+    bearDivActive := false
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - stopLossPips * pipSize
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + stopLossPips * pipSize
+strategy.exit("خروج شراء RSI Div", "شراء RSI Div", stop = longStop, limit = strategy.position_avg_price + stopLossPips * pipSize * rr)
+strategy.exit("خروج بيع RSI Div", "بيع RSI Div", stop = shortStop, limit = strategy.position_avg_price - stopLossPips * pipSize * rr)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء RSI Divergence")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع RSI Divergence")

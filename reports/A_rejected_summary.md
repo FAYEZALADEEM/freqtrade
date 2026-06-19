@@ -1,0 +1,24 @@
+# ملخص الاستراتيجيات المرفوضة من فئة A
+
+- LIB_STR048: +1.04 (WR ~58%, trades 62) — ربح 1.04%
+- LIB_STR054: +0.88 (WR 58.3%, trades 60) — أداء مقبول
+- OneHourForexReversal: +0.66 (WR 75.0%, trades 8) — WR عالي لكن صفقات قليلة
+- LIB_STR072: ~0.5 (WR N/A, trades N/A) — processed in A
+- LIB_STR073: ~0.5 (WR N/A, trades N/A) — processed in A
+- LIB_STR074: ~0.5 (WR N/A, trades N/A) — processed in A
+- SMC_ICT_Riyadh: +1.37 (WR ~32%, trades 400) — ربح عالي لكن WR منخفض جداً
+- VSAConservativeTemplate: +1.2 (WR 66.7%, trades 9) — عدد صفقات قليل جداً رغم WR عالي
+- BreakerBlock_Retest: +0.42 (WR ~34%, trades 435) — WR منخفض جداً
+- FVG_Inversion_Trade: +0.32 (WR ~32%, trades 1630) — صفقات كثيرة لكن ربح ضعيف
+- MA_Pullback_Strategy: +0.26 (WR ~50%, trades 86) — أداء ضعيف
+- ICT_SilverBullet_FVG: +0.22 (WR 54.4%, trades 68) — أداء ضعيف
+- RSI_Divergence_Reversal: +0.21 (WR ~50%, trades 88) — أداء ضعيف
+- CRT_ThickCandleBreak: +0.19 (WR 48.7%, trades 78) — weak performance
+- SMC_OrderBlock_BOS: +0.1 (WR ~50%, trades 50) — low
+- CRT_1AM: +0.1 (WR ~45%, trades 40) — low edge
+- LIB_STR006: +0.02 (WR low, trades 11) — ضعيف جداً صفقات قليلة
+- LIB_STR039: +0.02 (WR low, trades 11) — صفقات قليلة + WR منخفض
+- LIB_STR042: +0.02 (WR low, trades 11) — صفقات قليلة + WR منخفض
+- SMC_LiquidityGrab_ImbalanceOB: 0.0 (WR 57.1%, trades 14) — 0 profit
+- LIB_STR056: -0.02 (WR 45.5%, trades 11) — صفقات قليلة وربح سلبي
+- SMC_ICT_High_Frequency_Engine: -0.17 (WR 32.6%, trades 298) — negative profit

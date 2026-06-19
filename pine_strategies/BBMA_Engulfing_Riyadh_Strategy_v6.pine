@@ -1,0 +1,285 @@
+//@version=6
+strategy("BBMA Engulfing Riyadh Strategy v6 - مسودة بحثية", overlay=true, initial_capital=10000, currency=currency.USD, default_qty_type=strategy.fixed, default_qty_value=1, pyramiding=0, process_orders_on_close=true, calc_on_every_tick=false, margin_long=0.25, margin_short=0.25, commission_type=strategy.commission.percent, commission_value=0.0)
+
+// المصدر البرمجي: PDF019 - Advancing Engulfing Trading With Bollinger Bands / BBMA Confluences.
+// القاعدة المؤكدة: استخدام Engulfing SOP مع Bollinger Bands / BBMA على M15، ثم الدخول عند عودة السعر إلى منطقة engulfing.
+// القاعدة غير المحددة في الملف: تعريف Engulfing SOP، حدود منطقة engulfing، وقف الخسارة، الهدف، وإدارة الصفقة.
+// لذلك هذه نسخة بحثية للاختبار، وليست تمثيلًا نهائيًا مؤكدًا لكل تفاصيل المصدر.
+
+//==============================
+// 1) إعدادات عامة
+//==============================
+groupGeneral = "الإعدادات العامة"
+tradeSide = input.string("شراء وبيع", "اتجاه التداول", options=["شراء وبيع", "شراء فقط", "بيع فقط"], group=groupGeneral)
+confirmOnClose = input.bool(true, "تأكيد الإشارة بعد إغلاق الشمعة", group=groupGeneral)
+minBarsBetweenTrades = input.int(5, "أقل عدد شموع بين الصفقات", minval=0, group=groupGeneral)
+maxZoneAgeBars = input.int(30, "إلغاء المنطقة بعد عدد شموع", minval=1, group=groupGeneral)
+entryMode = input.string("لمس المنطقة", "طريقة تفعيل الدخول", options=["لمس المنطقة", "إغلاق داخل المنطقة"], group=groupGeneral)
+
+//==============================
+// 2) رأس المال والحجم
+//==============================
+groupRisk = "رأس المال وإدارة المخاطر"
+accountCapital = input.float(10000.0, "رأس المال بالدولار", minval=100, step=100, group=groupRisk)
+leverageInfo = input.int(400, "الرافعة المالية المرجعية", minval=1, maxval=400, group=groupRisk)
+useRiskQty = input.bool(true, "حساب حجم الصفقة حسب المخاطرة", group=groupRisk)
+riskPct = input.float(1.0, "نسبة المخاطرة من رأس المال %", minval=0.01, maxval=10, step=0.1, group=groupRisk)
+pointValueUsd = input.float(10.0, "قيمة النقطة بالدولار", minval=0.01, step=0.1, group=groupRisk)
+pricePointSize = input.float(0.0001, "حجم النقطة السعرية", minval=0.00000001, step=0.0001, group=groupRisk)
+fixedQty = input.float(1.0, "حجم ثابت عند تعطيل حساب المخاطرة", minval=0.01, step=0.01, group=groupRisk)
+
+//==============================
+// 3) فلتر الزمن - توقيت الرياض
+//==============================
+groupTime = "فلتر الزمن - توقيت الرياض"
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group=groupTime)
+riyadhSession = input.session("0000-2359", "جلسة التداول بتوقيت الرياض", group=groupTime)
+inRiyadhSession = not useSessionFilter or not na(time(timeframe.period, riyadhSession, "Asia/Riyadh"))
+
+//==============================
+// 4) Bollinger Bands / BBMA
+//==============================
+groupBB = "إعدادات Bollinger Bands / BBMA"
+bbLen = input.int(20, "فترة Bollinger Bands", minval=2, group=groupBB)
+bbMult = input.float(2.0, "انحراف Bollinger Bands", minval=0.1, step=0.1, group=groupBB)
+emaLen = input.int(50, "فترة EMA 50 / BBMA", minval=2, group=groupBB)
+squeezeLookback = input.int(20, "فترة قياس BB Squeeze", minval=5, group=groupBB)
+squeezeFactor = input.float(0.70, "حساسية BB Squeeze", minval=0.1, maxval=2.0, step=0.05, group=groupBB)
+squeezeValidBars = input.int(8, "صلاحية الاختراق بعد BB Squeeze", minval=1, group=groupBB)
+useEmaBias = input.bool(false, "تفعيل فلتر الاتجاه بواسطة EMA 50", group=groupBB)
+
+//==============================
+// 5) نموذج Engulfing والمنطقة
+//==============================
+groupEngulf = "إعدادات Engulfing Zone"
+engulfMode = input.string("ابتلاع جسم الشمعة السابقة", "تعريف Engulfing البرمجي", options=["ابتلاع جسم الشمعة السابقة", "كسر قمة/قاع الشمعة السابقة"], group=groupEngulf)
+zoneSource = input.string("جسم شمعة Engulfing", "مصدر حدود المنطقة", options=["جسم شمعة Engulfing", "كامل شمعة Engulfing"], group=groupEngulf)
+zonePaddingTicks = input.int(2, "هامش المنطقة بعدد Tick", minval=0, group=groupEngulf)
+invalidateOnCloseOutside = input.bool(true, "إلغاء المنطقة عند إغلاق السعر خارجها عكس الاتجاه", group=groupEngulf)
+
+//==============================
+// 6) نماذج التوافق من الملف
+//==============================
+groupModels = "نماذج BBMA المستخدمة"
+setupMode = input.string("كل النماذج", "النموذج المستخدم", options=["كل النماذج", "BB Squeeze", "BB Extreme A", "BB Extreme B", "BB Rejection A", "BB Rejection B", "BB Rejection C"], group=groupModels)
+
+//==============================
+// 7) وقف الخسارة وجني الربح
+//==============================
+groupExit = "وقف الخسارة وجني الربح"
+slMode = input.string("خارج منطقة Engulfing", "طريقة وقف الخسارة", options=["خارج منطقة Engulfing", "ATR", "نسبة مئوية"], group=groupExit)
+atrLen = input.int(14, "فترة ATR", minval=1, group=groupExit)
+atrMult = input.float(1.5, "مضاعف ATR للوقف", minval=0.1, step=0.1, group=groupExit)
+slPercent = input.float(0.5, "وقف خسارة بالنسبة المئوية", minval=0.01, step=0.05, group=groupExit)
+riskReward = input.float(2.0, "نسبة العائد إلى المخاطرة", minval=0.1, step=0.1, group=groupExit)
+closeOnOpposite = input.bool(true, "إغلاق الصفقة عند ظهور إشارة عكسية", group=groupExit)
+
+//==============================
+// 8) الحسابات الأساسية
+//==============================
+bbBasis = ta.sma(close, bbLen)
+bbDev = bbMult * ta.stdev(close, bbLen)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+ema50 = ta.ema(close, emaLen)
+atr = ta.atr(atrLen)
+
+bbWidth = bbUpper - bbLower
+avgBbWidth = ta.sma(bbWidth, squeezeLookback)
+isSqueeze = bbWidth <= avgBbWidth * squeezeFactor
+barsSinceSqueeze = ta.barssince(isSqueeze)
+recentSqueeze = not na(barsSinceSqueeze) and barsSinceSqueeze <= squeezeValidBars
+
+bodyHigh = math.max(open, close)
+bodyLow = math.min(open, close)
+prevBodyHigh = math.max(open[1], close[1])
+prevBodyLow = math.min(open[1], close[1])
+
+bullishEngulfBody = close > open and close[1] < open[1] and bodyHigh >= prevBodyHigh and bodyLow <= prevBodyLow
+bearishEngulfBody = close < open and close[1] > open[1] and bodyHigh >= prevBodyHigh and bodyLow <= prevBodyLow
+bullishBreakPrev = close > open and close > high[1]
+bearishBreakPrev = close < open and close < low[1]
+bullishEngulfing = engulfMode == "ابتلاع جسم الشمعة السابقة" ? bullishEngulfBody : bullishBreakPrev
+bearishEngulfing = engulfMode == "ابتلاع جسم الشمعة السابقة" ? bearishEngulfBody : bearishBreakPrev
+
+pad = syminfo.mintick * zonePaddingTicks
+zoneHighNow = (zoneSource == "جسم شمعة Engulfing" ? bodyHigh : high) + pad
+zoneLowNow = (zoneSource == "جسم شمعة Engulfing" ? bodyLow : low) - pad
+
+allowLong = tradeSide == "شراء وبيع" or tradeSide == "شراء فقط"
+allowShort = tradeSide == "شراء وبيع" or tradeSide == "بيع فقط"
+longBiasOk = not useEmaBias or close > ema50
+shortBiasOk = not useEmaBias or close < ema50
+confirmedOk = not confirmOnClose or barstate.isconfirmed
+
+//==============================
+// 9) توافقات BBMA المستخرجة
+//==============================
+useModel(modelName) =>
+    setupMode == "كل النماذج" or setupMode == modelName
+
+squeezeBreakLong = recentSqueeze and close > bbUpper
+squeezeBreakShort = recentSqueeze and close < bbLower
+
+extremeLong = close < bbLower
+extremeShort = close > bbUpper
+
+rejectionLong = low < bbLower and close > bbLower
+rejectionShort = high > bbUpper and close < bbUpper
+
+rejectionCLong = rejectionLong and low <= ema50 and close > ema50
+rejectionCShort = rejectionShort and high >= ema50 and close < ema50
+
+longConfluenceOnSignal = (useModel("BB Squeeze") and squeezeBreakLong) or (useModel("BB Extreme A") and extremeLong) or (useModel("BB Rejection A") and rejectionLong) or (useModel("BB Rejection C") and rejectionCLong)
+shortConfluenceOnSignal = (useModel("BB Squeeze") and squeezeBreakShort) or (useModel("BB Extreme A") and extremeShort) or (useModel("BB Rejection A") and rejectionShort) or (useModel("BB Rejection C") and rejectionCShort)
+
+allowApproachConfluence = useModel("BB Extreme B") or useModel("BB Rejection B") or useModel("BB Rejection C")
+longSetupAllowed = longConfluenceOnSignal or allowApproachConfluence
+shortSetupAllowed = shortConfluenceOnSignal or allowApproachConfluence
+
+//==============================
+// 10) تخزين مناطق Engulfing
+//==============================
+var bool pendingLong = false
+var bool pendingShort = false
+var bool pendingLongConfirmed = false
+var bool pendingShortConfirmed = false
+var float longZoneHigh = na
+var float longZoneLow = na
+var float shortZoneHigh = na
+var float shortZoneLow = na
+var int longZoneBar = na
+var int shortZoneBar = na
+var int lastTradeBar = na
+var float activeLongStop = na
+var float activeLongTarget = na
+var float activeShortStop = na
+var float activeShortTarget = na
+
+newLongZone = confirmedOk and allowLong and inRiyadhSession and longBiasOk and bullishEngulfing and longSetupAllowed
+newShortZone = confirmedOk and allowShort and inRiyadhSession and shortBiasOk and bearishEngulfing and shortSetupAllowed
+
+if newLongZone
+    pendingLong := true
+    pendingShort := false
+    pendingLongConfirmed := longConfluenceOnSignal
+    longZoneHigh := zoneHighNow
+    longZoneLow := zoneLowNow
+    longZoneBar := bar_index
+
+if newShortZone
+    pendingShort := true
+    pendingLong := false
+    pendingShortConfirmed := shortConfluenceOnSignal
+    shortZoneHigh := zoneHighNow
+    shortZoneLow := zoneLowNow
+    shortZoneBar := bar_index
+
+longZoneExpired = pendingLong and bar_index - longZoneBar > maxZoneAgeBars
+shortZoneExpired = pendingShort and bar_index - shortZoneBar > maxZoneAgeBars
+longZoneInvalid = pendingLong and invalidateOnCloseOutside and close < longZoneLow
+shortZoneInvalid = pendingShort and invalidateOnCloseOutside and close > shortZoneHigh
+
+if longZoneExpired or longZoneInvalid
+    pendingLong := false
+
+if shortZoneExpired or shortZoneInvalid
+    pendingShort := false
+
+//==============================
+// 11) شروط الدخول
+//==============================
+longTouchZone = pendingLong and bar_index > longZoneBar and (entryMode == "لمس المنطقة" ? (low <= longZoneHigh and high >= longZoneLow) : (close <= longZoneHigh and close >= longZoneLow))
+shortTouchZone = pendingShort and bar_index > shortZoneBar and (entryMode == "لمس المنطقة" ? (high >= shortZoneLow and low <= shortZoneHigh) : (close <= shortZoneHigh and close >= shortZoneLow))
+
+longApproachConfluence = pendingLongConfirmed or (useModel("BB Extreme B") and extremeLong) or (useModel("BB Rejection B") and rejectionLong) or (useModel("BB Rejection C") and rejectionCLong)
+shortApproachConfluence = pendingShortConfirmed or (useModel("BB Extreme B") and extremeShort) or (useModel("BB Rejection B") and rejectionShort) or (useModel("BB Rejection C") and rejectionCShort)
+
+spacingOk = na(lastTradeBar) or bar_index - lastTradeBar >= minBarsBetweenTrades
+longEntrySignal = confirmedOk and allowLong and inRiyadhSession and longBiasOk and longTouchZone and longApproachConfluence and spacingOk
+shortEntrySignal = confirmedOk and allowShort and inRiyadhSession and shortBiasOk and shortTouchZone and shortApproachConfluence and spacingOk
+
+//==============================
+// 12) وقف الخسارة والهدف والحجم
+//==============================
+calcLongStop(entryPrice) =>
+    slMode == "خارج منطقة Engulfing" ? longZoneLow : slMode == "ATR" ? entryPrice - atr * atrMult : entryPrice * (1 - slPercent / 100.0)
+
+calcShortStop(entryPrice) =>
+    slMode == "خارج منطقة Engulfing" ? shortZoneHigh : slMode == "ATR" ? entryPrice + atr * atrMult : entryPrice * (1 + slPercent / 100.0)
+
+calcQty(entryPrice, stopPrice) =>
+    stopPoints = math.abs(entryPrice - stopPrice) / pricePointSize
+    riskUsd = accountCapital * riskPct / 100.0
+    rawQty = stopPoints > 0 ? riskUsd / (stopPoints * pointValueUsd) : fixedQty
+    useRiskQty ? math.max(rawQty, 0.01) : fixedQty
+
+if closeOnOpposite and strategy.position_size > 0 and shortEntrySignal
+    strategy.close("شراء", comment="إغلاق بإشارة عكسية")
+
+if closeOnOpposite and strategy.position_size < 0 and longEntrySignal
+    strategy.close("بيع", comment="إغلاق بإشارة عكسية")
+
+if longEntrySignal
+    entryPrice = close
+    stopPrice = calcLongStop(entryPrice)
+    riskDistance = entryPrice - stopPrice
+    if riskDistance > syminfo.mintick
+        targetPrice = entryPrice + riskDistance * riskReward
+        qty = calcQty(entryPrice, stopPrice)
+        strategy.entry("شراء", strategy.long, qty=qty, comment="شراء BBMA")
+        activeLongStop := stopPrice
+        activeLongTarget := targetPrice
+        lastTradeBar := bar_index
+        pendingLong := false
+
+if shortEntrySignal
+    entryPrice = close
+    stopPrice = calcShortStop(entryPrice)
+    riskDistance = stopPrice - entryPrice
+    if riskDistance > syminfo.mintick
+        targetPrice = entryPrice - riskDistance * riskReward
+        qty = calcQty(entryPrice, stopPrice)
+        strategy.entry("بيع", strategy.short, qty=qty, comment="بيع BBMA")
+        activeShortStop := stopPrice
+        activeShortTarget := targetPrice
+        lastTradeBar := bar_index
+        pendingShort := false
+
+if strategy.position_size > 0
+    strategy.exit("خروج شراء", "شراء", stop=activeLongStop, limit=activeLongTarget, comment="SL/TP شراء")
+
+if strategy.position_size < 0
+    strategy.exit("خروج بيع", "بيع", stop=activeShortStop, limit=activeShortTarget, comment="SL/TP بيع")
+
+if strategy.position_size == 0 and not longEntrySignal and not shortEntrySignal
+    activeLongStop := na
+    activeLongTarget := na
+    activeShortStop := na
+    activeShortTarget := na
+
+//==============================
+// 13) الرسم على الشارت
+//==============================
+plot(bbBasis, "منتصف Bollinger", color=color.new(color.gray, 0))
+plot(bbUpper, "الحد العلوي Bollinger", color=color.new(color.blue, 0))
+plot(bbLower, "الحد السفلي Bollinger", color=color.new(color.blue, 0))
+plot(ema50, "EMA 50", color=color.new(color.orange, 0), linewidth=2)
+
+plot(pendingLong ? longZoneHigh : na, "حد منطقة شراء علوي", color=color.new(color.lime, 0), style=plot.style_linebr)
+plot(pendingLong ? longZoneLow : na, "حد منطقة شراء سفلي", color=color.new(color.lime, 0), style=plot.style_linebr)
+plot(pendingShort ? shortZoneHigh : na, "حد منطقة بيع علوي", color=color.new(color.red, 0), style=plot.style_linebr)
+plot(pendingShort ? shortZoneLow : na, "حد منطقة بيع سفلي", color=color.new(color.red, 0), style=plot.style_linebr)
+
+plot(strategy.position_size > 0 ? activeLongStop : na, "وقف شراء", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size > 0 ? activeLongTarget : na, "هدف شراء", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? activeShortStop : na, "وقف بيع", color=color.new(color.red, 0), style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? activeShortTarget : na, "هدف بيع", color=color.new(color.green, 0), style=plot.style_linebr, linewidth=2)
+
+plotshape(newLongZone, title="منطقة شراء جديدة", style=shape.circle, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="Z")
+plotshape(newShortZone, title="منطقة بيع جديدة", style=shape.circle, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="Z")
+plotshape(longEntrySignal, title="إشارة شراء", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="شراء")
+plotshape(shortEntrySignal, title="إشارة بيع", style=shape.triangledown, location=location.abovebar, color=color.new(color.maroon, 0), size=size.small, text="بيع")
+
+alertcondition(longEntrySignal, title="تنبيه شراء BBMA Engulfing", message="ظهرت إشارة شراء BBMA Engulfing بعد العودة إلى المنطقة")
+alertcondition(shortEntrySignal, title="تنبيه بيع BBMA Engulfing", message="ظهرت إشارة بيع BBMA Engulfing بعد العودة إلى المنطقة")

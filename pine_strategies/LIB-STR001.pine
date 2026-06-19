@@ -1,0 +1,116 @@
+//@version=6
+strategy("LIB-STR001 - CRT Enigma Model #1 - PDF-only update", overlay=true, pyramiding=0)
+
+// PDF-only update / تحديث من ملفات PDF فقط:
+// Sources:
+// - 1024709392-The-CRT-Enigma-Decoding-the-Hidden-Logic-of-Market-Structure-2-1.pdf
+// - 964986660-The-CRT-Enigma-Decoding-the-Hidden-Logic-of-Market-Structure.pdf
+//
+// Confirmed source text:
+// - Model #1 Thick Candle Break: short/long entry rules.
+// - Stop beyond thick candle high/low.
+// - Partial profit at candle EQ and final target toward Expansion Level / support / resistance.
+//
+// [يتطلب مراجعة: thick candle و recent high/low و significant support/resistance لم تُعرّف رقميًا في PDF.]
+// لذلك هذه القيم مدخلات قابلة للمراجعة وليست إعدادات مصدرية مؤكدة.
+
+enableLong = input.bool(true, "تفعيل الشراء", group="1. إعدادات التشغيل", tooltip="يسمح بفتح صفقات شراء عند تحقق نموذج CRT Model #1 للشراء.")
+enableShort = input.bool(true, "تفعيل البيع", group="1. إعدادات التشغيل", tooltip="يسمح بفتح صفقات بيع عند تحقق نموذج CRT Model #1 للبيع.")
+minBarsBetweenSignals = input.int(3, "أقل عدد شموع بين الإشارات", minval=0, group="1. إعدادات التشغيل", tooltip="يمنع تكرار الإشارات بسرعة؛ القيمة 0 تعني السماح بإشارة جديدة دون انتظار.")
+
+recentLookback = input.int(20, "نافذة القمة/القاع السابق [يتطلب مراجعة]", minval=2, group="2. تعريف نموذج CRT رقم 1", tooltip="عدد الشموع المستخدمة لتقدير recent high/low؛ هذا تعريف رقمي مساعد لأن PDF لم يحدد رقمًا.")
+bodyLookback = input.int(20, "نافذة متوسط جسم الشمعة [يتطلب مراجعة]", minval=2, group="2. تعريف نموذج CRT رقم 1", tooltip="عدد الشموع المستخدمة لحساب متوسط جسم الشمعة ومقارنة thick candle به.")
+thickBodyMult = input.float(1.5, "معامل الشمعة السميكة [يتطلب مراجعة]", minval=0.1, step=0.1, group="2. تعريف نموذج CRT رقم 1", tooltip="يحدد متى تعتبر الشمعة thick candle مقارنة بمتوسط الأجسام؛ PDF وصفها ولم يعط حدًا رقميًا.")
+
+useEqPartial = input.bool(true, "تفعيل جني جزئي عند EQ", group="3. إدارة الصفقة", tooltip="يفعل جني 50% عند Equilibrium إذا كان EQ في اتجاه الصفقة والهدف النهائي صالحًا.")
+
+bodySize = math.abs(close - open)
+avgBody = ta.sma(bodySize, bodyLookback)
+
+oldHighBeforePurge = ta.highest(high, recentLookback)[2]
+oldLowBeforePurge = ta.lowest(low, recentLookback)[2]
+
+prevBodyTop = math.max(open[1], close[1])
+prevBodyBottom = math.min(open[1], close[1])
+prevEq = (high[1] + low[1]) / 2.0
+
+thickBull = close[1] > open[1] and bodySize[1] >= avgBody[1] * thickBodyMult
+thickBear = close[1] < open[1] and bodySize[1] >= avgBody[1] * thickBodyMult
+
+// PDF page 95 / 105: Short Model #1.
+shortSweepOldHigh = high[1] > oldHighBeforePurge
+shortCloseBackBelowBody = close < prevBodyBottom
+model1ShortRaw = thickBull and shortSweepOldHigh and shortCloseBackBelowBody
+
+// PDF page 95 / 106: Long Model #1.
+longSweepRecentLow = low[1] < oldLowBeforePurge
+longCloseBackAboveBody = close > prevBodyTop
+model1LongRaw = thickBear and longSweepRecentLow and longCloseBackAboveBody
+
+var int lastLongSignalBar = na
+var int lastShortSignalBar = na
+allowLongSpacing = na(lastLongSignalBar) or bar_index - lastLongSignalBar >= minBarsBetweenSignals
+allowShortSpacing = na(lastShortSignalBar) or bar_index - lastShortSignalBar >= minBarsBetweenSignals
+
+longSignal = enableLong and model1LongRaw and allowLongSpacing and strategy.position_size == 0
+shortSignal = enableShort and model1ShortRaw and allowShortSpacing and strategy.position_size == 0
+
+var float longStop = na
+var float longEq = na
+var float longExpansion = na
+var float shortStop = na
+var float shortEq = na
+var float shortExpansion = na
+
+if longSignal
+    longStop := low[1]
+    longEq := prevEq
+    longExpansion := high[1]
+    strategy.entry("Long", strategy.long)
+    lastLongSignalBar := bar_index
+
+if shortSignal
+    shortStop := high[1]
+    shortEq := prevEq
+    shortExpansion := low[1]
+    strategy.entry("Short", strategy.short)
+    lastShortSignalBar := bar_index
+
+if strategy.position_size > 0 and not na(longStop)
+    longEqIsTarget = useEqPartial and longEq > strategy.position_avg_price and longExpansion > strategy.position_avg_price
+    if longEqIsTarget
+        strategy.exit("L-EQ", "Long", stop=longStop, limit=longEq, qty_percent=50)
+        strategy.exit("L-EL", "Long", stop=longStop, limit=longExpansion, qty_percent=50)
+    else if longExpansion > strategy.position_avg_price
+        strategy.exit("L-EL", "Long", stop=longStop, limit=longExpansion)
+    else
+        strategy.exit("L-SL", "Long", stop=longStop)
+
+if strategy.position_size < 0 and not na(shortStop)
+    shortEqIsTarget = useEqPartial and shortEq < strategy.position_avg_price and shortExpansion < strategy.position_avg_price
+    if shortEqIsTarget
+        strategy.exit("S-EQ", "Short", stop=shortStop, limit=shortEq, qty_percent=50)
+        strategy.exit("S-EL", "Short", stop=shortStop, limit=shortExpansion, qty_percent=50)
+    else if shortExpansion < strategy.position_avg_price
+        strategy.exit("S-EL", "Short", stop=shortStop, limit=shortExpansion)
+    else
+        strategy.exit("S-SL", "Short", stop=shortStop)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    longStop := na
+    longEq := na
+    longExpansion := na
+    shortStop := na
+    shortEq := na
+    shortExpansion := na
+
+plot(longEq, "Long EQ", color=color.new(color.lime, 65), style=plot.style_linebr)
+plot(longExpansion, "Long Expansion", color=color.new(color.green, 50), style=plot.style_linebr)
+plot(shortEq, "Short EQ", color=color.new(color.red, 65), style=plot.style_linebr)
+plot(shortExpansion, "Short Expansion", color=color.new(color.maroon, 50), style=plot.style_linebr)
+
+plotshape(longSignal, title="CRT Model #1 Long", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="M1L")
+plotshape(shortSignal, title="CRT Model #1 Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="M1S")
+
+alertcondition(longSignal, title="LIB-STR001 Model #1 Long", message="LIB-STR001 CRT Model #1 long signal")
+alertcondition(shortSignal, title="LIB-STR001 Model #1 Short", message="LIB-STR001 CRT Model #1 short signal")

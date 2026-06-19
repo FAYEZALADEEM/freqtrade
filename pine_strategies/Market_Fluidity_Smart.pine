@@ -1,0 +1,526 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════════════
+//   Market Fluidity Smart Indicator - SRC Methodology
+//   نسخة ذكية بثلاث طبقات: تحليل + إشارات بنجوم + توصيات
+//   Smart 3-layer version: Analysis + Star Signals + Recommendations
+// ════════════════════════════════════════════════════════════════════════════════════
+
+indicator("Market Fluidity Smart - SRC", "MF-Smart", overlay=true, max_labels_count=200, max_lines_count=100)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                            ① المدخلات | INPUTS
+// ════════════════════════════════════════════════════════════════════════════════════
+
+// ──── Master Display Controls ────
+gM = "🎛️ Master Controls"
+showZones      = input.bool(true, "Zones (الدعم/المقاومة)",   group=gM)
+showEMA        = input.bool(true, "EMA Trend",                group=gM)
+showSessions   = input.bool(true, "Sessions",                 group=gM)
+showSignals    = input.bool(true, "Signals (Stars ⭐)",       group=gM)
+showFakeouts   = input.bool(true, "Fakeouts",                 group=gM)
+showLevels     = input.bool(true, "SL/TP Levels",             group=gM)
+showAnalyzer   = input.bool(true, "Smart Analyzer Panel",     group=gM)
+showSignalLog  = input.bool(true, "Active Signals Log",       group=gM)
+
+// ──── Signal Quality Filter ────
+gQ = "⭐ Signal Quality"
+minStarsToShow = input.int(2, "Min Stars to Show (1-5)", minval=1, maxval=5, group=gQ,
+   tooltip="1 = إظهار كل الإشارات | 5 = إشارات نادرة جداً فقط")
+minStarsAlert  = input.int(4, "Min Stars for Alert", minval=1, maxval=5, group=gQ,
+   tooltip="الحد الأدنى للنجوم لإطلاق التنبيه")
+minStarsLevels = input.int(3, "Min Stars to Show SL/TP", minval=1, maxval=5, group=gQ,
+   tooltip="رسم مستويات SL/TP فقط للإشارات بهذا التقييم أو أعلى")
+
+// ──── Trend Settings ────
+gT = "📈 Trend"
+pivotLen      = input.int(5, "Pivot Length", minval=2, maxval=20, group=gT)
+emaLen        = input.int(50, "EMA Length", minval=10, group=gT)
+emaColor      = input.color(color.new(color.blue, 30), "EMA Color", group=gT)
+
+// ──── Zones ────
+gZ = "🎯 Zones & Range"
+resColor      = input.color(color.new(color.red,   0), "Resistance Color", group=gZ)
+supColor      = input.color(color.new(color.green, 0), "Support Color",    group=gZ)
+zoneWidth     = input.int(2, "Zone Line Width", minval=1, maxval=5, group=gZ)
+fillRange     = input.bool(true, "Fill Range", group=gZ)
+fillColor     = input.color(color.new(color.gray, 92), "Range Fill", group=gZ)
+minRangePips  = input.float(25.0, "Min Range (pips)", minval=5,  group=gZ)
+maxRangePips  = input.float(80.0, "Max Range (pips)", minval=20, group=gZ)
+proxPct       = input.float(35.0, "Zone Proximity %", minval=10, maxval=50, group=gZ)
+
+// ──── Sessions ────
+gS = "🕐 Sessions"
+sesTZ         = input.string("GMT", "Timezone",
+   options=["GMT","UTC","Europe/London","America/New_York"], group=gS)
+showS1        = input.bool(true, "Pre-London",   inline="s1", group=gS)
+timeS1        = input.session("0600-0700", "",   inline="s1", group=gS)
+colorS1       = input.color(color.new(color.aqua,    92), "", inline="s1", group=gS)
+showS2        = input.bool(true, "London",       inline="s2", group=gS)
+timeS2        = input.session("0700-1100", "",   inline="s2", group=gS)
+colorS2       = input.color(color.new(color.blue,    92), "", inline="s2", group=gS)
+showS3        = input.bool(true, "Pre-NY",       inline="s3", group=gS)
+timeS3        = input.session("1130-1230", "",   inline="s3", group=gS)
+colorS3       = input.color(color.new(color.yellow,  92), "", inline="s3", group=gS)
+showS4        = input.bool(true, "NY",           inline="s4", group=gS)
+timeS4        = input.session("1230-1600", "",   inline="s4", group=gS)
+colorS4       = input.color(color.new(color.orange,  92), "", inline="s4", group=gS)
+showS5        = input.bool(true, "LDN Close",    inline="s5", group=gS)
+timeS5        = input.session("1500-1700", "",   inline="s5", group=gS)
+colorS5       = input.color(color.new(color.purple,  92), "", inline="s5", group=gS)
+
+// ──── Signal Colors ────
+gC = "🎨 Signal Colors"
+star5BuyClr   = input.color(color.new(#00C853, 0),  "⭐⭐⭐⭐⭐ Buy",  group=gC)
+star4BuyClr   = input.color(color.new(#43A047, 10), "⭐⭐⭐⭐  Buy",   group=gC)
+star3BuyClr   = input.color(color.new(#66BB6A, 25), "⭐⭐⭐    Buy",   group=gC)
+star2BuyClr   = input.color(color.new(#A5D6A7, 40), "⭐⭐      Buy",   group=gC)
+star1BuyClr   = input.color(color.new(#C8E6C9, 60), "⭐        Buy",   group=gC)
+
+star5SellClr  = input.color(color.new(#D50000, 0),  "⭐⭐⭐⭐⭐ Sell", group=gC)
+star4SellClr  = input.color(color.new(#E53935, 10), "⭐⭐⭐⭐  Sell",  group=gC)
+star3SellClr  = input.color(color.new(#EF5350, 25), "⭐⭐⭐    Sell",  group=gC)
+star2SellClr  = input.color(color.new(#EF9A9A, 40), "⭐⭐      Sell",  group=gC)
+star1SellClr  = input.color(color.new(#FFCDD2, 60), "⭐        Sell",  group=gC)
+
+// ──── Fakeouts ────
+gF = "🪞 Fakeouts"
+fakeLookback  = input.int(10, "Lookback Bars", minval=3, maxval=30, group=gF)
+bullFakeClr   = input.color(color.new(color.purple, 0), "Bull Fakeout", group=gF)
+bearFakeClr   = input.color(color.new(color.teal,   0), "Bear Fakeout", group=gF)
+
+// ──── SL/TP ────
+gL = "📐 SL/TP"
+rrRatio       = input.float(2.0, "R:R Ratio", minval=0.5, step=0.1, group=gL)
+slBufPips     = input.float(2.0, "SL Buffer (pips)", minval=0, step=0.5, group=gL)
+entryClr      = input.color(color.new(color.white, 0), "Entry Color", group=gL)
+slClr         = input.color(color.new(color.red,   0), "SL Color",    group=gL)
+tpClr         = input.color(color.new(color.green, 0), "TP Color",    group=gL)
+
+// ──── Panel Style ────
+gP = "📊 Panel Style"
+panelPos      = input.string("top_right", "Position",
+   options=["top_left","top_right","middle_left","middle_right","bottom_left","bottom_right"],
+   group=gP)
+panelSize     = input.string("normal", "Size",
+   options=["tiny","small","normal","large"], group=gP)
+panelBg       = input.color(color.new(#0D1117, 5),  "Background", group=gP)
+panelTxt      = input.color(color.white,            "Text Color", group=gP)
+panelHdr      = input.color(color.new(#1565C0, 0),  "Header",     group=gP)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                          ② الدوال المساعدة | HELPERS
+// ════════════════════════════════════════════════════════════════════════════════════
+pipSz = syminfo.mintick * (syminfo.type == "forex" and syminfo.currency != "JPY" ? 10 : 1)
+
+getPos(p) =>
+    p == "top_left"     ? position.top_left     :
+    p == "top_right"    ? position.top_right    :
+    p == "middle_left"  ? position.middle_left  :
+    p == "middle_right" ? position.middle_right :
+    p == "bottom_left"  ? position.bottom_left  :
+    p == "bottom_right" ? position.bottom_right :
+    position.top_right
+
+getSize(s) =>
+    s == "tiny"   ? size.tiny   :
+    s == "small"  ? size.small  :
+    s == "normal" ? size.normal :
+    s == "large"  ? size.large  : size.normal
+
+starText(n) =>
+    n == 5 ? "⭐⭐⭐⭐⭐" :
+    n == 4 ? "⭐⭐⭐⭐"   :
+    n == 3 ? "⭐⭐⭐"     :
+    n == 2 ? "⭐⭐"       :
+    n == 1 ? "⭐"         : ""
+
+starColor(n, isBuy) =>
+    if isBuy
+        n == 5 ? star5BuyClr :
+        n == 4 ? star4BuyClr :
+        n == 3 ? star3BuyClr :
+        n == 2 ? star2BuyClr :
+        n == 1 ? star1BuyClr : color.new(color.gray, 50)
+    else
+        n == 5 ? star5SellClr :
+        n == 4 ? star4SellClr :
+        n == 3 ? star3SellClr :
+        n == 2 ? star2SellClr :
+        n == 1 ? star1SellClr : color.new(color.gray, 50)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                          ③ الجلسات | SESSIONS
+// ════════════════════════════════════════════════════════════════════════════════════
+inS1 = not na(time(timeframe.period, timeS1, sesTZ))
+inS2 = not na(time(timeframe.period, timeS2, sesTZ))
+inS3 = not na(time(timeframe.period, timeS3, sesTZ))
+inS4 = not na(time(timeframe.period, timeS4, sesTZ))
+inS5 = not na(time(timeframe.period, timeS5, sesTZ))
+
+inAnySession = (showS1 and inS1) or (showS2 and inS2) or (showS3 and inS3) or (showS4 and inS4) or (showS5 and inS5)
+
+bgcolor(showSessions and showS1 and inS1 ? colorS1 : na, title="Pre-London")
+bgcolor(showSessions and showS2 and inS2 ? colorS2 : na, title="London")
+bgcolor(showSessions and showS3 and inS3 ? colorS3 : na, title="Pre-NY")
+bgcolor(showSessions and showS4 and inS4 ? colorS4 : na, title="NY")
+bgcolor(showSessions and showS5 and inS5 ? colorS5 : na, title="LDN Close")
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                          ④ Pivots والاتجاه | TREND
+// ════════════════════════════════════════════════════════════════════════════════════
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low,   pivotLen, pivotLen)
+
+var float lastPH = na
+var float prevPH = na
+var float lastPL = na
+var float prevPL = na
+
+if not na(ph)
+    prevPH := lastPH
+    lastPH := ph
+if not na(pl)
+    prevPL := lastPL
+    lastPL := pl
+
+isUp   = not na(lastPH) and not na(prevPH) and not na(lastPL) and not na(prevPL) and lastPH > prevPH and lastPL > prevPL
+isDown = not na(lastPH) and not na(prevPH) and not na(lastPL) and not na(prevPL) and lastPH < prevPH and lastPL < prevPL
+
+ema = ta.ema(close, emaLen)
+emaBull = close > ema
+emaBear = close < ema
+
+plot(showEMA ? ema : na, "EMA", color=emaColor, linewidth=2)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                          ⑤ المناطق والنطاقات | ZONES
+// ════════════════════════════════════════════════════════════════════════════════════
+zU = lastPH
+zL = lastPL
+rngSize = (not na(zU) and not na(zL)) ? zU - zL : na
+rngPips = not na(rngSize) ? rngSize / pipSz : na
+rangeOK = not na(rngPips) and rngPips >= minRangePips and rngPips <= maxRangePips
+
+nearLow = not na(zL) and not na(rngSize) and (close - zL) <= rngSize * (proxPct / 100)
+nearUp  = not na(zU) and not na(rngSize) and (zU - close) <= rngSize * (proxPct / 100)
+inMid   = not nearLow and not nearUp
+
+// Distance from zones in pips
+distFromSup = not na(zL) ? (close - zL) / pipSz : na
+distFromRes = not na(zU) ? (zU - close) / pipSz : na
+
+plot(showZones and not na(zU) ? zU : na, "Resistance", color=resColor, linewidth=zoneWidth, style=plot.style_linebr)
+plot(showZones and not na(zL) ? zL : na, "Support",    color=supColor, linewidth=zoneWidth, style=plot.style_linebr)
+
+uBand = plot(showZones and fillRange and not na(zU) ? zU : na, "U", display=display.none)
+lBand = plot(showZones and fillRange and not na(zL) ? zL : na, "L", display=display.none)
+fill(uBand, lBand, color=fillColor, title="Range Fill")
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//             ⑥ حساب جودة الإشارة بالنجوم | STAR SIGNAL QUALITY
+// ════════════════════════════════════════════════════════════════════════════════════
+pBody = math.abs(close[1] - open[1])
+pUW   = high[1] - math.max(open[1], close[1])
+pLW   = math.min(open[1], close[1]) - low[1]
+pBear = close[1] < open[1]
+pBull = close[1] > open[1]
+cBull = close > open
+cBear = close < open
+
+pHasLW = pLW > syminfo.mintick * 2
+pHasUW = pUW > syminfo.mintick * 2
+pBullExh = pBull and pUW > pBody * 1.5
+pBearExh = pBear and pLW > pBody * 1.5
+
+// ──── الشروط الأساسية للشراء | Base buy conditions ────
+buyBase  = pBear and cBull and close > high[1]
+sellBase = pBull and cBear and close < low[1]
+
+// ──── حساب النجوم للشراء (0-5) | Calculate buy stars ────
+var int buyStars = 0
+buyStars := 0
+
+if buyBase
+    buyStars := buyStars + (inAnySession ? 1 : 0)       // ⭐ في جلسة
+    buyStars := buyStars + ((isUp and emaBull) ? 1 : 0) // ⭐ اتجاه صاعد
+    buyStars := buyStars + (nearLow ? 1 : 0)            // ⭐ قرب الدعم
+    buyStars := buyStars + (rangeOK ? 1 : 0)            // ⭐ نطاق مقبول
+    buyStars := buyStars + ((pHasLW or pBearExh) ? 1 : 0) // ⭐ فتيل/استنفاد
+
+// ──── حساب النجوم للبيع (0-5) | Calculate sell stars ────
+var int sellStars = 0
+sellStars := 0
+
+if sellBase
+    sellStars := sellStars + (inAnySession ? 1 : 0)
+    sellStars := sellStars + ((isDown and emaBear) ? 1 : 0)
+    sellStars := sellStars + (nearUp ? 1 : 0)
+    sellStars := sellStars + (rangeOK ? 1 : 0)
+    sellStars := sellStars + ((pHasUW or pBullExh) ? 1 : 0)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑦ رسم الإشارات بمستويات | PLOT SIGNALS
+// ════════════════════════════════════════════════════════════════════════════════════
+showBuy5  = showSignals and buyStars >= 5 and 5 >= minStarsToShow
+showBuy4  = showSignals and buyStars == 4 and 4 >= minStarsToShow
+showBuy3  = showSignals and buyStars == 3 and 3 >= minStarsToShow
+showBuy2  = showSignals and buyStars == 2 and 2 >= minStarsToShow
+showBuy1  = showSignals and buyStars == 1 and 1 >= minStarsToShow
+
+showSell5 = showSignals and sellStars >= 5 and 5 >= minStarsToShow
+showSell4 = showSignals and sellStars == 4 and 4 >= minStarsToShow
+showSell3 = showSignals and sellStars == 3 and 3 >= minStarsToShow
+showSell2 = showSignals and sellStars == 2 and 2 >= minStarsToShow
+showSell1 = showSignals and sellStars == 1 and 1 >= minStarsToShow
+
+plotshape(showBuy5, "Buy 5★", shape.triangleup, location.belowbar, star5BuyClr, size=size.huge,   text="BUY ⭐⭐⭐⭐⭐")
+plotshape(showBuy4, "Buy 4★", shape.triangleup, location.belowbar, star4BuyClr, size=size.large,  text="Buy ⭐⭐⭐⭐")
+plotshape(showBuy3, "Buy 3★", shape.triangleup, location.belowbar, star3BuyClr, size=size.normal, text="buy ⭐⭐⭐")
+plotshape(showBuy2, "Buy 2★", shape.triangleup, location.belowbar, star2BuyClr, size=size.small,  text="⭐⭐")
+plotshape(showBuy1, "Buy 1★", shape.triangleup, location.belowbar, star1BuyClr, size=size.tiny,   text="⭐")
+
+plotshape(showSell5, "Sell 5★", shape.triangledown, location.abovebar, star5SellClr, size=size.huge,   text="SELL ⭐⭐⭐⭐⭐")
+plotshape(showSell4, "Sell 4★", shape.triangledown, location.abovebar, star4SellClr, size=size.large,  text="Sell ⭐⭐⭐⭐")
+plotshape(showSell3, "Sell 3★", shape.triangledown, location.abovebar, star3SellClr, size=size.normal, text="sell ⭐⭐⭐")
+plotshape(showSell2, "Sell 2★", shape.triangledown, location.abovebar, star2SellClr, size=size.small,  text="⭐⭐")
+plotshape(showSell1, "Sell 1★", shape.triangledown, location.abovebar, star1SellClr, size=size.tiny,   text="⭐")
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑧ كشف الكسر الكاذب | FAKEOUTS
+// ════════════════════════════════════════════════════════════════════════════════════
+hN = ta.highest(high, fakeLookback)
+lN = ta.lowest(low,   fakeLookback)
+
+bullFake = high[1] > hN[2] and close[1] < hN[2] and cBear and close < low[1]
+bearFake = low[1]  < lN[2] and close[1] > lN[2] and cBull and close > high[1]
+
+plotshape(showFakeouts and bullFake, "Bull Fakeout", shape.xcross, location.abovebar, bullFakeClr, size=size.small, text="FK↓")
+plotshape(showFakeouts and bearFake, "Bear Fakeout", shape.xcross, location.belowbar, bearFakeClr, size=size.small, text="FK↑")
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑨ مستويات SL/TP | LEVELS
+// ════════════════════════════════════════════════════════════════════════════════════
+slBuf       = slBufPips * pipSz
+sugLongSL   = math.min(low,  low[1])  - slBuf
+sugShortSL  = math.max(high, high[1]) + slBuf
+longR       = close - sugLongSL
+shortR      = sugShortSL - close
+sugLongTP   = close + longR  * rrRatio
+sugShortTP  = close - shortR * rrRatio
+
+showBuyLevels  = showLevels and buyStars  >= minStarsLevels
+showSellLevels = showLevels and sellStars >= minStarsLevels
+
+plot(showBuyLevels  ? close      : na, "Buy Entry",  color=entryClr, linewidth=2, style=plot.style_circles)
+plot(showBuyLevels  ? sugLongSL  : na, "Buy SL",     color=slClr,    linewidth=2, style=plot.style_circles)
+plot(showBuyLevels  ? sugLongTP  : na, "Buy TP",     color=tpClr,    linewidth=2, style=plot.style_circles)
+plot(showSellLevels ? close      : na, "Sell Entry", color=entryClr, linewidth=2, style=plot.style_circles)
+plot(showSellLevels ? sugShortSL : na, "Sell SL",    color=slClr,    linewidth=2, style=plot.style_circles)
+plot(showSellLevels ? sugShortTP : na, "Sell TP",    color=tpClr,    linewidth=2, style=plot.style_circles)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑩ المساعد الذكي والتوصية | SMART ANALYZER
+// ════════════════════════════════════════════════════════════════════════════════════
+
+// ──── جلسة حالية | Current session ────
+curSession = inS1 ? "Pre-London 🌅" :
+             inS2 ? "London 🇬🇧"    :
+             inS3 ? "Pre-NY ☕"      :
+             inS4 ? "NY Open 🇺🇸"   :
+             inS5 ? "LDN Close 🌇"  : "Off-Session ❌"
+
+// ──── حالة الاتجاه | Trend status ────
+trendStatus = isUp ? "↑ Uptrend (HH/HL)" : isDown ? "↓ Downtrend (LH/LL)" : "← Sideways"
+
+// ──── حالة الموقع | Location status ────
+locationStatus = nearLow ? "Near Support ✓" : nearUp ? "Near Resistance ✓" : "Mid Range ⚠"
+
+// ──── حالة الشمعة السابقة | Previous candle status ────
+prevCandleStatus = pBullExh ? "Bullish Exhaustion 🎯 (Sell hint)" :
+                   pBearExh ? "Bearish Exhaustion 🎯 (Buy hint)" :
+                   pBull and pHasUW ? "Bullish with upper wick" :
+                   pBear and pHasLW ? "Bearish with lower wick" :
+                   pBull ? "Plain bullish" :
+                   pBear ? "Plain bearish" : "Doji/Neutral"
+
+// ──── التوصية الذكية | Smart recommendation ────
+buildRecommendation() =>
+    string rec = ""
+    if not inAnySession
+        rec := "⏸ خارج الجلسات — انتظر فتح لندن/نيويورك"
+    else if isUp == false and isDown == false
+        rec := "⏸ اتجاه غير واضح — انتظر بنية HH/HL أو LH/LL"
+    else if inMid
+        rec := "⚠ السعر في وسط النطاق (50/50) — لا تتداول الآن"
+    else if not rangeOK
+        rec := "⚠ النطاق خارج المدى المثالي (25-80 نقطة)"
+    else if isUp and nearLow
+        rec := "✅ ظروف ممتازة للشراء — راقب شمعة هابطة بفتيل سفلي"
+    else if isDown and nearUp
+        rec := "✅ ظروف ممتازة للبيع — راقب شمعة صاعدة بفتيل علوي"
+    else if isUp and nearUp
+        rec := "⏸ السعر قرب المقاومة في اتجاه صاعد — انتظر ارتداد"
+    else if isDown and nearLow
+        rec := "⏸ السعر قرب الدعم في اتجاه هابط — انتظر ارتداد"
+    else
+        rec := "🔍 ابقَ متيقظاً — راقب تطور الشمعة"
+    rec
+
+recommendation = buildRecommendation()
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑪ لوحة المعلومات الذكية | SMART PANEL
+// ════════════════════════════════════════════════════════════════════════════════════
+if showAnalyzer and barstate.islast
+    var table pnl = table.new(getPos(panelPos), 2, 16, bgcolor=panelBg, border_color=color.gray, border_width=1)
+    txtSz = getSize(panelSize)
+
+    // ─── العنوان ───
+    table.cell(pnl, 0, 0, "🧠 Market Fluidity Smart", bgcolor=panelHdr, text_color=color.white, text_size=txtSz)
+    table.cell(pnl, 1, 0, "SRC Methodology",          bgcolor=panelHdr, text_color=color.white, text_size=txtSz)
+
+    // ─── قسم التحليل ───
+    table.cell(pnl, 0, 1, "── Analysis التحليل ──", bgcolor=color.new(color.navy, 30), text_color=color.yellow, text_size=txtSz)
+    table.cell(pnl, 1, 1, "",                       bgcolor=color.new(color.navy, 30), text_color=color.white,  text_size=txtSz)
+
+    // الاتجاه
+    trendBg = isUp ? color.new(color.green, 60) : isDown ? color.new(color.red, 60) : color.new(color.gray, 60)
+    table.cell(pnl, 0, 2, "Trend",     bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 2, trendStatus, bgcolor=trendBg, text_color=color.white, text_size=txtSz)
+
+    // EMA
+    emaBg  = emaBull ? color.new(color.green, 60) : color.new(color.red, 60)
+    emaTxt = (emaBull ? "↑ Above " : "↓ Below ") + str.tostring(ema, format.mintick)
+    table.cell(pnl, 0, 3, "EMA(" + str.tostring(emaLen) + ")", bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 3, emaTxt,                              bgcolor=emaBg,  text_color=color.white, text_size=txtSz)
+
+    // النطاق
+    rngTxt = not na(rngPips) ? str.tostring(rngPips, "#.0") + " pips" + (rangeOK ? " ✓" : " ✗") : "—"
+    rngBg  = rangeOK ? color.new(color.green, 60) : color.new(color.red, 60)
+    table.cell(pnl, 0, 4, "Range",  bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 4, rngTxt,   bgcolor=rngBg,   text_color=color.white, text_size=txtSz)
+
+    // الموقع
+    locBg = inMid ? color.new(color.orange, 50) : color.new(color.green, 60)
+    table.cell(pnl, 0, 5, "Location",       bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 5, locationStatus,   bgcolor=locBg,   text_color=color.white, text_size=txtSz)
+
+    // المسافة من الدعم/المقاومة
+    distTxt = not na(distFromSup) and not na(distFromRes) ?
+              "Sup:" + str.tostring(distFromSup, "#.0") + "p | Res:" + str.tostring(distFromRes, "#.0") + "p" : "—"
+    table.cell(pnl, 0, 6, "Distance", bgcolor=panelBg,                  text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 6, distTxt,    bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=txtSz)
+
+    // الجلسة
+    sesBg = inAnySession ? color.new(color.green, 60) : color.new(color.gray, 60)
+    table.cell(pnl, 0, 7, "Session",   bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 7, curSession,  bgcolor=sesBg,   text_color=color.white, text_size=txtSz)
+
+    // الشمعة السابقة
+    table.cell(pnl, 0, 8, "Prev Candle",      bgcolor=panelBg,                     text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 8, prevCandleStatus,   bgcolor=color.new(color.purple, 70), text_color=color.white, text_size=txtSz)
+
+    // ─── التوصية الذكية ───
+    table.cell(pnl, 0, 9, "── Recommendation ──",  bgcolor=color.new(color.navy, 30), text_color=color.yellow, text_size=txtSz)
+    table.cell(pnl, 1, 9, "",                      bgcolor=color.new(color.navy, 30), text_color=color.white,  text_size=txtSz)
+
+    recBg = str.contains(recommendation, "✅") ? color.new(color.green, 40) :
+            str.contains(recommendation, "⚠") ? color.new(color.orange, 40) :
+            str.contains(recommendation, "⏸") ? color.new(color.gray, 40) :
+            color.new(color.blue, 50)
+    table.cell(pnl, 0, 10, "💡 Advice", bgcolor=panelBg,    text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 10, recommendation, bgcolor=recBg,  text_color=color.white, text_size=txtSz)
+
+    // ─── الإشارات النشطة ───
+    table.cell(pnl, 0, 11, "── Signal Quality ──", bgcolor=color.new(color.navy, 30), text_color=color.yellow, text_size=txtSz)
+    table.cell(pnl, 1, 11, "",                     bgcolor=color.new(color.navy, 30), text_color=color.white,  text_size=txtSz)
+
+    // إشارة الشراء
+    buyTxt = buyStars > 0 ? starText(buyStars) + " (" + str.tostring(buyStars) + "/5)" : "—"
+    buyBg  = buyStars >= 4 ? color.new(color.green, 30) :
+             buyStars >= 2 ? color.new(color.green, 60) :
+             color.new(color.gray, 70)
+    table.cell(pnl, 0, 12, "🟢 Buy Signal", bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 12, buyTxt,          bgcolor=buyBg,   text_color=color.white, text_size=txtSz)
+
+    // إشارة البيع
+    sellTxt = sellStars > 0 ? starText(sellStars) + " (" + str.tostring(sellStars) + "/5)" : "—"
+    sellBg  = sellStars >= 4 ? color.new(color.red, 30) :
+              sellStars >= 2 ? color.new(color.red, 60) :
+              color.new(color.gray, 70)
+    table.cell(pnl, 0, 13, "🔴 Sell Signal", bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 13, sellTxt,          bgcolor=sellBg,  text_color=color.white, text_size=txtSz)
+
+    // مستويات SL/TP إن وُجدت إشارة كافية
+    anyValidBuy  = buyStars  >= minStarsLevels
+    anyValidSell = sellStars >= minStarsLevels
+
+    slTxt = anyValidBuy  ? "SL " + str.tostring(longR / pipSz,  "#.0") + "p → TP " + str.tostring((longR  * rrRatio) / pipSz, "#.0") + "p" :
+            anyValidSell ? "SL " + str.tostring(shortR / pipSz, "#.0") + "p → TP " + str.tostring((shortR * rrRatio) / pipSz, "#.0") + "p" :
+            "Need " + str.tostring(minStarsLevels) + "★+ to show"
+    slBg  = anyValidBuy or anyValidSell ? color.new(color.blue, 50) : color.new(color.gray, 70)
+    table.cell(pnl, 0, 14, "📐 Levels", bgcolor=panelBg, text_color=panelTxt, text_size=txtSz)
+    table.cell(pnl, 1, 14, slTxt,       bgcolor=slBg,    text_color=color.white, text_size=txtSz)
+
+    // تذكير
+    table.cell(pnl, 0, 15, "⚠ Visual aid", bgcolor=color.new(color.orange, 30), text_color=color.white, text_size=size.tiny)
+    table.cell(pnl, 1, 15, "YOU decide!",  bgcolor=color.new(color.orange, 30), text_color=color.white, text_size=size.tiny)
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑫ سجل الإشارات النشطة | SIGNAL LOG
+// ════════════════════════════════════════════════════════════════════════════════════
+var label[] activeLabels = array.new<label>()
+
+if showSignalLog and (buyStars >= minStarsToShow or sellStars >= minStarsToShow) and (buyBase or sellBase)
+    isBuySignal = buyStars >= minStarsToShow and buyStars > sellStars
+    isSellSignal = sellStars >= minStarsToShow and sellStars > buyStars
+
+    if isBuySignal
+        labelText = "Buy " + starText(buyStars) + "\n@ " + str.tostring(close, format.mintick) +
+                    "\nSL: " + str.tostring(longR / pipSz, "#.0") + "p"
+        lbl = label.new(bar_index, low - (high - low) * 0.5, labelText,
+             color=starColor(buyStars, true), textcolor=color.white,
+             style=label.style_label_up, size=size.small)
+        array.push(activeLabels, lbl)
+        if array.size(activeLabels) > 20
+            label.delete(array.shift(activeLabels))
+
+    if isSellSignal
+        labelText = "Sell " + starText(sellStars) + "\n@ " + str.tostring(close, format.mintick) +
+                    "\nSL: " + str.tostring(shortR / pipSz, "#.0") + "p"
+        lbl = label.new(bar_index, high + (high - low) * 0.5, labelText,
+             color=starColor(sellStars, false), textcolor=color.white,
+             style=label.style_label_down, size=size.small)
+        array.push(activeLabels, lbl)
+        if array.size(activeLabels) > 20
+            label.delete(array.shift(activeLabels))
+
+// ════════════════════════════════════════════════════════════════════════════════════
+//                       ⑬ التنبيهات | ALERTS
+// ════════════════════════════════════════════════════════════════════════════════════
+alertBuy  = buyStars  >= minStarsAlert and buyBase
+alertSell = sellStars >= minStarsAlert and sellBase
+
+alertcondition(alertBuy,
+   title="🟢 Buy Signal (Quality)",
+   message="MF-Smart: BUY signal on {{ticker}} {{interval}} at {{close}} | Stars: 4+")
+
+alertcondition(alertSell,
+   title="🔴 Sell Signal (Quality)",
+   message="MF-Smart: SELL signal on {{ticker}} {{interval}} at {{close}} | Stars: 4+")
+
+alertcondition(buyStars >= 5,
+   title="⭐⭐⭐⭐⭐ Perfect Buy",
+   message="MF-Smart: PERFECT BUY (5★) on {{ticker}} at {{close}}")
+
+alertcondition(sellStars >= 5,
+   title="⭐⭐⭐⭐⭐ Perfect Sell",
+   message="MF-Smart: PERFECT SELL (5★) on {{ticker}} at {{close}}")
+
+alertcondition(bullFake,
+   title="🟣 Bull Fakeout",
+   message="MF-Smart: Bull fakeout (potential SELL) on {{ticker}} at {{close}}")
+
+alertcondition(bearFake,
+   title="🔵 Bear Fakeout",
+   message="MF-Smart: Bear fakeout (potential BUY) on {{ticker}} at {{close}}")

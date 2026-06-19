@@ -1,0 +1,287 @@
+//@version=6
+indicator(
+     title = "Mean Reversion الإحصائي V1.1 — مؤشر إشارات EURUSD M15",
+     shorttitle = "MR ZScore Indicator V1.1",
+     overlay = true,
+     max_labels_count = 300
+)
+
+// ============================================================================
+// مؤشر إشارات فقط — لا يفتح صفقات ولا ينفذ وقف/هدف
+// الاستراتيجية: Z-Score + Bollinger + RSI(2) + ADX + ميل EMA H1
+// الزوج الأساسي: EUR/USD
+// الفريم المقترح: M15
+//
+// تسلسل الإشارة:
+// 1) ظهور انحراف إحصائي خارج Bollinger مع RSI متطرف.
+// 2) انتظار شمعة رفض بذيل انعكاسي.
+// 3) إذا أغلقت الشمعة التالية داخل Bollinger تظهر إشارة شراء/بيع.
+// ============================================================================
+
+// ============================================================================
+// 1) الإعدادات
+// ============================================================================
+groupMain = "1) المؤشرات الأساسية"
+basisLen       = input.int(20, "طول SMA / Bollinger / Z-Score", minval = 2, group = groupMain)
+bbMult         = input.float(2.0, "انحراف Bollinger", minval = 0.1, step = 0.1, group = groupMain)
+zTrigger       = input.float(2.0, "عتبة Z-Score للإشارة", minval = 0.5, step = 0.1, group = groupMain)
+rsiLen         = input.int(2, "طول RSI", minval = 1, group = groupMain)
+rsiBuyLevel    = input.float(10.0, "RSI أقصى لإشارة شراء", minval = 0, maxval = 50, step = 1, group = groupMain)
+rsiSellLevel   = input.float(90.0, "RSI أدنى لإشارة بيع", minval = 50, maxval = 100, step = 1, group = groupMain)
+
+groupRegime = "2) فلتر السوق العرضي"
+diLen          = input.int(14, "طول DI / ADX", minval = 1, group = groupRegime)
+adxSmooth      = input.int(14, "تنعيم ADX", minval = 1, group = groupRegime)
+adxH1Max       = input.float(22.0, "أقصى ADX على H1", minval = 1, step = 0.5, group = groupRegime)
+adxM15Max      = input.float(25.0, "أقصى ADX على M15", minval = 1, step = 0.5, group = groupRegime)
+emaSlopeLen    = input.int(50, "EMA لسياق H1", minval = 2, group = groupRegime)
+slopeBars      = input.int(20, "عدد شموع H1 لحساب الميل", minval = 1, group = groupRegime)
+maxSlopePips   = input.float(0.3, "أقصى ميل EMA50 H1 — Pip/Bar", minval = 0, step = 0.1, group = groupRegime)
+
+groupConfirm = "3) التأكيد"
+wickPct        = input.float(0.60, "الذيل المطلوب من مدى الشمعة", minval = 0.1, maxval = 1.0, step = 0.05, group = groupConfirm)
+atrLen         = input.int(14, "طول ATR لفشل الاختراق", minval = 1, group = groupConfirm)
+setupLifeBars  = input.int(4, "أقصى شموع انتظار الرفض بعد الإشارة", minval = 1, maxval = 20, group = groupConfirm)
+useSession     = input.bool(false, "تفعيل نافذة جلسة اختيارية", group = groupConfirm)
+tradeSession   = input.session("1200-1500:23456", "نافذة الجلسة GMT", group = groupConfirm)
+sessionTz      = input.string("GMT+0", "المنطقة الزمنية للجلسة", group = groupConfirm)
+
+groupView = "4) العرض"
+showSetup      = input.bool(true, "إظهار الإشارات الإحصائية المقبولة", group = groupView)
+showRejection  = input.bool(true, "إظهار شمعة الرفض", group = groupView)
+showConfirmed  = input.bool(true, "إظهار إشارات الدخول المؤكدة", group = groupView)
+showRejected   = input.bool(true, "إظهار الإشارات المرفوضة بالفلاتر", group = groupView)
+showPanel      = input.bool(true, "إظهار لوحة التشخيص", group = groupView)
+
+// ============================================================================
+// 2) دوال مساعدة
+// ============================================================================
+pip = syminfo.type == "forex" ? syminfo.mintick * 10.0 : syminfo.mintick
+
+f_adx(_diLen, _smooth) =>
+    [plusDI, minusDI, adxValue] = ta.dmi(_diLen, _smooth)
+    adxValue
+
+f_slopePips(_emaLen, _bars, _pip) =>
+    emaValue = ta.ema(close, _emaLen)
+    (emaValue - emaValue[_bars]) / (_bars * _pip)
+
+// ============================================================================
+// 3) المؤشرات الأساسية
+// ============================================================================
+basis = ta.sma(close, basisLen)
+dev = ta.stdev(close, basisLen)
+upperBand = basis + bbMult * dev
+lowerBand = basis - bbMult * dev
+zScore = dev > 0 ? (close - basis) / dev : 0.0
+rsiValue = ta.rsi(close, rsiLen)
+atrValue = ta.atr(atrLen)
+
+adxM15 = f_adx(diLen, adxSmooth)
+adxH1 = request.security(syminfo.tickerid, "60", f_adx(diLen, adxSmooth), barmerge.gaps_off, barmerge.lookahead_off)
+slopeH1Pips = request.security(syminfo.tickerid, "60", f_slopePips(emaSlopeLen, slopeBars, pip), barmerge.gaps_off, barmerge.lookahead_off)
+emaH1 = request.security(syminfo.tickerid, "60", ta.ema(close, emaSlopeLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+isM15 = timeframe.isminutes and timeframe.multiplier == 15
+sessionAllowed = not useSession or not na(time(timeframe.period, tradeSession, sessionTz))
+
+filterH1Adx = adxH1 < adxH1Max
+filterM15Adx = adxM15 < adxM15Max
+filterSlope = math.abs(slopeH1Pips) < maxSlopePips
+regimeAllowed = filterH1Adx and filterM15Adx and filterSlope
+
+// ============================================================================
+// 4) الإشارة الإحصائية: Z-Score + Bollinger + RSI
+// ============================================================================
+longStatTrigger = zScore <= -zTrigger and close <= lowerBand and rsiValue < rsiBuyLevel
+shortStatTrigger = zScore >= zTrigger and close >= upperBand and rsiValue > rsiSellLevel
+
+longSetupSignal = sessionAllowed and regimeAllowed and longStatTrigger
+shortSetupSignal = sessionAllowed and regimeAllowed and shortStatTrigger
+
+longRejectedByRegime = longStatTrigger and not regimeAllowed
+shortRejectedByRegime = shortStatTrigger and not regimeAllowed
+
+// ============================================================================
+// 5) شمعة الرفض
+// ============================================================================
+barRange = high - low
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+validBar = barRange > 0
+
+longWick = validBar and lowerWick >= wickPct * barRange
+shortWick = validBar and upperWick >= wickPct * barRange
+
+// ============================================================================
+// 6) آلة حالات الإشارة
+//    0 = لا إعداد
+//    1 = انتظار ذيل شراء
+//    2 = انتظار عودة شراء داخل Bollinger
+//   -1 = انتظار ذيل بيع
+//   -2 = انتظار عودة بيع داخل Bollinger
+// ============================================================================
+var int state = 0
+var int triggerBar = na
+var int rejectionBar = na
+
+var int statBuyCount = 0
+var int statSellCount = 0
+var int acceptedBuyCount = 0
+var int acceptedSellCount = 0
+var int wickBuyCount = 0
+var int wickSellCount = 0
+var int confirmedBuyCount = 0
+var int confirmedSellCount = 0
+
+if longStatTrigger
+    statBuyCount += 1
+if shortStatTrigger
+    statSellCount += 1
+
+if longSetupSignal
+    acceptedBuyCount += 1
+if shortSetupSignal
+    acceptedSellCount += 1
+
+// متغيرات الإشارة المرئية لهذه الشمعة
+bool rejectionLongSignal = false
+bool rejectionShortSignal = false
+bool confirmedLongSignal = false
+bool confirmedShortSignal = false
+
+// إلغاء الإعداد إذا فشل قبل اكتمال التأكيد
+longBreakFailure = close < lowerBand - 1.5 * atrValue
+shortBreakFailure = close > upperBand + 1.5 * atrValue
+adxFailure = adxM15 >= adxM15Max
+expiredWaitingWick = (state == 1 or state == -1) and bar_index - triggerBar > setupLifeBars
+
+if state > 0 and (adxFailure or longBreakFailure or expiredWaitingWick)
+    state := 0
+    triggerBar := na
+    rejectionBar := na
+
+if state < 0 and (adxFailure or shortBreakFailure or expiredWaitingWick)
+    state := 0
+    triggerBar := na
+    rejectionBar := na
+
+// تسجيل إعداد جديد عندما لا توجد إشارة معلقة
+if state == 0
+    if longSetupSignal
+        triggerBar := bar_index
+        if longWick
+            state := 2
+            rejectionBar := bar_index
+            rejectionLongSignal := true
+            wickBuyCount += 1
+        else
+            state := 1
+    else if shortSetupSignal
+        triggerBar := bar_index
+        if shortWick
+            state := -2
+            rejectionBar := bar_index
+            rejectionShortSignal := true
+            wickSellCount += 1
+        else
+            state := -1
+
+// البحث عن شمعة رفض بعد الإشارة
+if state == 1 and bar_index > triggerBar and longWick
+    state := 2
+    rejectionBar := bar_index
+    rejectionLongSignal := true
+    wickBuyCount += 1
+
+if state == -1 and bar_index > triggerBar and shortWick
+    state := -2
+    rejectionBar := bar_index
+    rejectionShortSignal := true
+    wickSellCount += 1
+
+// التأكيد: الشمعة التالية للرفض تعود داخل Bollinger
+if state == 2 and bar_index == rejectionBar + 1
+    confirmedLongSignal := close > lowerBand and close < upperBand and not adxFailure and not longBreakFailure
+    if confirmedLongSignal
+        confirmedBuyCount += 1
+    state := 0
+    triggerBar := na
+    rejectionBar := na
+
+if state == -2 and bar_index == rejectionBar + 1
+    confirmedShortSignal := close < upperBand and close > lowerBand and not adxFailure and not shortBreakFailure
+    if confirmedShortSignal
+        confirmedSellCount += 1
+    state := 0
+    triggerBar := na
+    rejectionBar := na
+
+// ============================================================================
+// 7) الرسوم والمؤشرات
+// ============================================================================
+plot(basis, "SMA20 — المتوسط", color = color.yellow, linewidth = 2)
+upperPlot = plot(upperBand, "Bollinger Upper", color = color.blue, linewidth = 1)
+lowerPlot = plot(lowerBand, "Bollinger Lower", color = color.blue, linewidth = 1)
+fill(upperPlot, lowerPlot, color = color.new(color.blue, 92), title = "Bollinger Range")
+plot(emaH1, "EMA50 H1", color = color.new(color.orange, 25), linewidth = 1)
+
+plot(zScore, "Z-Score", display = display.data_window)
+plot(rsiValue, "RSI(2)", display = display.data_window)
+plot(adxM15, "ADX M15", display = display.data_window)
+plot(adxH1, "ADX H1", display = display.data_window)
+
+plotshape(showSetup and longSetupSignal, title = "إعداد شراء إحصائي", text = "Z شراء", style = shape.labelup, location = location.belowbar, color = color.new(color.green, 25), textcolor = color.white, size = size.tiny)
+plotshape(showSetup and shortSetupSignal, title = "إعداد بيع إحصائي", text = "Z بيع", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 25), textcolor = color.white, size = size.tiny)
+
+plotshape(showRejection and rejectionLongSignal, title = "رفض شرائي", text = "رفض", style = shape.circle, location = location.belowbar, color = color.lime, textcolor = color.black, size = size.tiny)
+plotshape(showRejection and rejectionShortSignal, title = "رفض بيعي", text = "رفض", style = shape.circle, location = location.abovebar, color = color.red, textcolor = color.white, size = size.tiny)
+
+plotshape(showConfirmed and confirmedLongSignal, title = "إشارة شراء مؤكدة", text = "شراء", style = shape.triangleup, location = location.belowbar, color = color.lime, textcolor = color.black, size = size.small)
+plotshape(showConfirmed and confirmedShortSignal, title = "إشارة بيع مؤكدة", text = "بيع", style = shape.triangledown, location = location.abovebar, color = color.red, textcolor = color.white, size = size.small)
+
+plotshape(showRejected and longRejectedByRegime, title = "شراء مرفوض بالفلتر", text = "فلتر", style = shape.xcross, location = location.belowbar, color = color.gray, size = size.tiny)
+plotshape(showRejected and shortRejectedByRegime, title = "بيع مرفوض بالفلتر", text = "فلتر", style = shape.xcross, location = location.abovebar, color = color.gray, size = size.tiny)
+
+// ============================================================================
+// 8) التنبيهات
+// ============================================================================
+alertcondition(confirmedLongSignal, title = "Mean Reversion — شراء مؤكد", message = "إشارة شراء مؤكدة Mean Reversion على {{ticker}} — {{interval}}")
+alertcondition(confirmedShortSignal, title = "Mean Reversion — بيع مؤكد", message = "إشارة بيع مؤكدة Mean Reversion على {{ticker}} — {{interval}}")
+alertcondition(longSetupSignal, title = "Mean Reversion — إعداد شراء", message = "ظهر إعداد شراء إحصائي وينتظر التأكيد على {{ticker}} — {{interval}}")
+alertcondition(shortSetupSignal, title = "Mean Reversion — إعداد بيع", message = "ظهر إعداد بيع إحصائي وينتظر التأكيد على {{ticker}} — {{interval}}")
+
+// ============================================================================
+// 9) لوحة التشخيص
+// ============================================================================
+stateText = state == 1 ? "شراء: انتظار رفض" : state == 2 ? "شراء: انتظار عودة BB" : state == -1 ? "بيع: انتظار رفض" : state == -2 ? "بيع: انتظار عودة BB" : "لا يوجد"
+
+var table panel = table.new(position.top_right, 2, 12, border_width = 1)
+
+if barstate.islast and showPanel
+    table.cell(panel, 0, 0, "MR Indicator", bgcolor = color.new(color.blue, 65), text_color = color.white)
+    table.cell(panel, 1, 0, "EURUSD M15", bgcolor = color.new(color.blue, 65), text_color = color.white)
+    table.cell(panel, 0, 1, "الفريم")
+    table.cell(panel, 1, 1, isM15 ? "M15 ✓" : "استخدم M15", text_color = isM15 ? color.lime : color.orange)
+    table.cell(panel, 0, 2, "Z / RSI")
+    table.cell(panel, 1, 2, str.tostring(zScore, "#.##") + " / " + str.tostring(rsiValue, "#.0"))
+    table.cell(panel, 0, 3, "ADX H1 < 22")
+    table.cell(panel, 1, 3, filterH1Adx ? "✓ " + str.tostring(adxH1, "#.0") : "✗ " + str.tostring(adxH1, "#.0"), text_color = filterH1Adx ? color.lime : color.red)
+    table.cell(panel, 0, 4, "ADX M15 < 25")
+    table.cell(panel, 1, 4, filterM15Adx ? "✓ " + str.tostring(adxM15, "#.0") : "✗ " + str.tostring(adxM15, "#.0"), text_color = filterM15Adx ? color.lime : color.red)
+    table.cell(panel, 0, 5, "ميل H1 < 0.3")
+    table.cell(panel, 1, 5, filterSlope ? "✓ " + str.tostring(math.abs(slopeH1Pips), "#.##") : "✗ " + str.tostring(math.abs(slopeH1Pips), "#.##"), text_color = filterSlope ? color.lime : color.red)
+    table.cell(panel, 0, 6, "الحالة")
+    table.cell(panel, 1, 6, stateText)
+    table.cell(panel, 0, 7, "إشارات خام شراء/بيع")
+    table.cell(panel, 1, 7, str.tostring(statBuyCount) + " / " + str.tostring(statSellCount))
+    table.cell(panel, 0, 8, "مقبولة شراء/بيع")
+    table.cell(panel, 1, 8, str.tostring(acceptedBuyCount) + " / " + str.tostring(acceptedSellCount))
+    table.cell(panel, 0, 9, "رفض سعري شراء/بيع")
+    table.cell(panel, 1, 9, str.tostring(wickBuyCount) + " / " + str.tostring(wickSellCount))
+    table.cell(panel, 0, 10, "مؤكدة شراء/بيع")
+    table.cell(panel, 1, 10, str.tostring(confirmedBuyCount) + " / " + str.tostring(confirmedSellCount))
+    table.cell(panel, 0, 11, "الجلسة")
+    table.cell(panel, 1, 11, useSession ? "مفعّلة" : "غير مفعّلة")
+
+bgcolor(not isM15 ? color.new(color.orange, 90) : na, title = "تنبيه: استخدم فريم M15")

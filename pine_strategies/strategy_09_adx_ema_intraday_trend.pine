@@ -1,0 +1,51 @@
+//@version=6
+strategy("09 - ADX EMA Intraday Trend", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: عبارة التقرير ADX > 20 أو أقل من 50 حُولت إلى نطاق قابل للبرمجة: ADX بين الحد الأدنى والحد الأعلى.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بإشارات الشراء عندما DI+ أعلى من DI-.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بإشارات البيع عندما DI- أعلى من DI+.")
+emaLen = input.int(14, "طول EMA", minval = 1, maxval = 200, group = grp03, tooltip = "طول EMA المذكور في الاستراتيجية.")
+adxLen = input.int(14, "طول ADX و DI", minval = 1, maxval = 100, group = grp03, tooltip = "طول ADX و DI حسب إعدادات التقرير.")
+adxMin = input.float(20.0, "أدنى ADX", minval = 1.0, step = 0.5, group = grp04, tooltip = "الحد الأدنى لقوة الاتجاه.")
+adxMax = input.float(50.0, "أعلى ADX", minval = 1.0, step = 0.5, group = grp04, tooltip = "الحد الأعلى الاختياري لتجنب الإشارات المتأخرة جدًا.")
+usePrevTrend = input.bool(false, "تفعيل فلتر اتجاه اليوم السابق", group = grp04, tooltip = "فلتر مبسط يقارن إغلاق اليوم السابق بافتتاحه دون استخدام lookahead.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "مسافة وقف الخسارة الافتراضية.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف مقابل الوقف.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى نقطة الدخول بعد ربح محدد.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة قبل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت التداول عند تفعيل الفلتر.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الدخول على الشارت.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+ema = ta.ema(close, emaLen)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxLen)
+prevDailyClose = request.security(syminfo.tickerid, "D", close[1], lookahead = barmerge.lookahead_off)
+prevDailyOpen = request.security(syminfo.tickerid, "D", open[1], lookahead = barmerge.lookahead_off)
+prevTrendLong = not usePrevTrend or prevDailyClose > prevDailyOpen
+prevTrendShort = not usePrevTrend or prevDailyClose < prevDailyOpen
+adxOk = adx >= adxMin and adx <= adxMax
+longSignal = enableLong and inSession and adxOk and diPlus > diMinus and close > ema and prevTrendLong
+shortSignal = enableShort and inSession and adxOk and diMinus > diPlus and close < ema and prevTrendShort
+if longSignal
+    strategy.entry("شراء ADX EMA", strategy.long)
+if shortSignal
+    strategy.entry("بيع ADX EMA", strategy.short)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - stopLossPips * pipSize
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + stopLossPips * pipSize
+strategy.exit("خروج شراء ADX EMA", "شراء ADX EMA", stop = longStop, limit = strategy.position_avg_price + stopLossPips * pipSize * rr)
+strategy.exit("خروج بيع ADX EMA", "بيع ADX EMA", stop = shortStop, limit = strategy.position_avg_price - stopLossPips * pipSize * rr)
+plot(ema, "EMA", color = color.orange)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء ADX EMA")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع ADX EMA")

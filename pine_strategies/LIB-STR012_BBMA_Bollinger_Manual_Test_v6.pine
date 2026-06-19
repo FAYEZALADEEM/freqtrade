@@ -1,0 +1,89 @@
+//@version=6
+strategy("LIB-STR012 - BBMA/Bollinger Manual Test - Research Draft", overlay=true, pyramiding=0, process_orders_on_close=true)
+
+// Educational research draft only. Not financial advice or a trading recommendation.
+// Source rules do not confirm exact entries, exits, SL, or TP. Treat all signals as test hypotheses.
+
+groupCore = "Core"
+groupRisk = "Optional Exit / SLTP"
+groupVisual = "Visuals"
+
+enableLong = input.bool(true, "Enable long", group=groupCore)
+enableShort = input.bool(true, "Enable short", group=groupCore)
+minBarsBetweenSignals = input.int(5, "Minimum bars between signals", minval=0, group=groupCore)
+fastLen = input.int(21, "Fast EMA", minval=2, group=groupCore)
+slowLen = input.int(55, "Slow EMA", minval=3, group=groupCore)
+bbLen = input.int(20, "Bollinger length", minval=2, group=groupCore)
+bbMult = input.float(2.0, "Bollinger multiplier", minval=0.1, step=0.1, group=groupCore)
+minScore = input.int(2, "Minimum confluence score", minval=1, maxval=2, group=groupCore)
+bbMode = input.string("Basis side", "BB signal mode", options=["Basis side", "Basis cross", "Band reclaim"], group=groupCore)
+
+useOptionalExit = input.bool(false, "Use optional inferred exit", group=groupRisk)
+useOptionalSLTP = input.bool(false, "Use optional inferred SL/TP", group=groupRisk)
+slPercent = input.float(1.0, "Optional SL %", minval=0.1, step=0.1, group=groupRisk)
+tpPercent = input.float(2.0, "Optional TP %", minval=0.1, step=0.1, group=groupRisk)
+
+showBands = input.bool(true, "Show Bollinger Bands", group=groupVisual)
+showSignals = input.bool(true, "Show signals", group=groupVisual)
+
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+trendLong = emaFast > emaSlow
+trendShort = emaFast < emaSlow
+
+bbBasis = ta.sma(close, bbLen)
+bbDev = bbMult * ta.stdev(close, bbLen)
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+bbLong = switch bbMode
+    "Basis cross" => ta.crossover(close, bbBasis)
+    "Band reclaim" => ta.crossover(close, bbLower)
+    => close > bbBasis and close < bbUpper
+
+bbShort = switch bbMode
+    "Basis cross" => ta.crossunder(close, bbBasis)
+    "Band reclaim" => ta.crossunder(close, bbUpper)
+    => close < bbBasis and close > bbLower
+
+longScore = (trendLong ? 1 : 0) + (bbLong ? 1 : 0)
+shortScore = (trendShort ? 1 : 0) + (bbShort ? 1 : 0)
+
+var int lastLongSignalBar = na
+var int lastShortSignalBar = na
+allowLongSpacing = na(lastLongSignalBar) or bar_index - lastLongSignalBar >= minBarsBetweenSignals
+allowShortSpacing = na(lastShortSignalBar) or bar_index - lastShortSignalBar >= minBarsBetweenSignals
+
+buySignal = enableLong and longScore >= minScore and allowLongSpacing
+sellSignal = enableShort and shortScore >= minScore and allowShortSpacing
+
+if useOptionalExit and strategy.position_size > 0 and shortScore >= minScore
+    strategy.close("Long")
+
+if useOptionalExit and strategy.position_size < 0 and longScore >= minScore
+    strategy.close("Short")
+
+if useOptionalSLTP and strategy.position_size > 0
+    strategy.exit("Long optional SLTP", "Long", stop=strategy.position_avg_price * (1 - slPercent / 100.0), limit=strategy.position_avg_price * (1 + tpPercent / 100.0))
+
+if useOptionalSLTP and strategy.position_size < 0
+    strategy.exit("Short optional SLTP", "Short", stop=strategy.position_avg_price * (1 + slPercent / 100.0), limit=strategy.position_avg_price * (1 - tpPercent / 100.0))
+
+if buySignal
+    strategy.entry("Long", strategy.long)
+    lastLongSignalBar := bar_index
+
+if sellSignal
+    strategy.entry("Short", strategy.short)
+    lastShortSignalBar := bar_index
+
+plot(emaFast, "Fast EMA", color=color.new(color.teal, 0))
+plot(emaSlow, "Slow EMA", color=color.new(color.orange, 0))
+plot(showBands ? bbBasis : na, "BB basis", color=color.new(color.gray, 0))
+plot(showBands ? bbUpper : na, "BB upper", color=color.new(color.gray, 35))
+plot(showBands ? bbLower : na, "BB lower", color=color.new(color.gray, 35))
+plotshape(showSignals and buySignal, title="Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="B")
+plotshape(showSignals and sellSignal, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="S")
+
+alertcondition(buySignal, title="LIB-STR012 Buy", message="LIB-STR012 manual-test buy signal")
+alertcondition(sellSignal, title="LIB-STR012 Sell", message="LIB-STR012 manual-test sell signal")

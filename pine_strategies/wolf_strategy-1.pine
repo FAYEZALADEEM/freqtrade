@@ -1,0 +1,226 @@
+//@version=6
+// =====================================================================
+//  THEEB (WOLF) STRATEGY  -  Supply/Demand + Market Structure
+//  Source: B PRO TRADER ACADEMY lessons (الذيب / المطورة / الادخالات)
+//  Build: faithful mechanical version using the user's confirmed numbers.
+//  Market: Forex | Apply on the ENTRY chart (default M15). Trend/zones = H4.
+//  NOTE: All trading rules come ONLY from the source + user-confirmed
+//        numeric definitions. Items marked [ASSUMPTION] are execution
+//        gaps turned into adjustable inputs, not new trading rules.
+// =====================================================================
+strategy("Theeb (Wolf) Strategy v6",
+     overlay              = true,
+     pyramiding           = 0,
+     calc_on_every_tick   = false,
+     process_orders_on_close = true,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 10,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.0)
+
+// ============================ INPUTS =================================
+// ---- General Settings ----
+gGen          = "الإعدادات العامة"
+i_allowLong   = input.bool(true,  "تفعيل الشراء",  group = gGen)
+i_allowShort  = input.bool(true,  "تفعيل البيع", group = gGen)
+
+// ---- MTF Settings ----
+gMTF          = "إعدادات الأطر الزمنية (MTF)"
+i_htfTF       = input.timeframe("240", "فريم الاتجاه والمنطقة (الأكبر)", group = gMTF) // H4
+i_htfLeft     = input.int(5, "سوينج الفريم الأكبر - يسار",  minval = 2, maxval = 10, group = gMTF)
+i_htfRight    = input.int(5, "سوينج الفريم الأكبر - يمين", minval = 2, maxval = 10, group = gMTF)
+i_ltfLeft     = input.int(3, "سوينج فريم الدخول - يسار",  minval = 2, maxval = 8,  group = gMTF)
+i_ltfRight    = input.int(3, "سوينج فريم الدخول - يمين", minval = 2, maxval = 8,  group = gMTF)
+
+// ---- Entry Conditions ----
+gEnt          = "شروط الدخول"
+i_atrLen        = input.int(14,  "طول ATR", minval = 5, group = gEnt)
+i_requireTrend  = input.bool(false, "اشتراط اتجاه الفريم الأكبر (وإلا تكفي المنطقة)", group = gEnt)
+i_requireStrength = input.bool(true,  "اشتراط منطقة قوية (كسرت قمة/قاع الفريم الأكبر)", group = gEnt)
+i_require90     = input.bool(true,  "اشتراط حركة 90 درجة نحو المنطقة", group = gEnt)
+i_move90Mult    = input.float(1.5, "حركة 90 - أدنى ATR", minval = 0.5, step = 0.1, group = gEnt)
+i_move90Bars    = input.int(6,   "حركة 90 - أقصى عدد شمعات", minval = 2, maxval = 12, group = gEnt)
+i_superAtrMult  = input.float(1.5, "حركة السوبر - أدنى ATR", minval = 0.5, step = 0.1, group = gEnt)
+i_superLook     = input.int(6,   "حركة السوبر - عدد الشمعات للخلف", minval = 2, maxval = 12, group = gEnt)
+i_requireBehavior = input.bool(true, "اشتراط Fakeout أو Compression", group = gEnt)
+i_fakeoutAtrMult  = input.float(0.25, "Fakeout - أقصى اختراق (ATR)", minval = 0.05, step = 0.05, group = gEnt)
+i_fakeoutBars     = input.int(2,  "Fakeout - نافذة العودة (شمعات)", minval = 1, maxval = 4, group = gEnt)
+i_compFast        = input.int(3,  "Compression - ATR سريع", minval = 2, group = gEnt)
+i_compSlow        = input.int(10, "Compression - ATR بطيء", minval = 5, group = gEnt)
+i_requireConfirm  = input.bool(true, "اشتراط شمعة ابتلاع تأكيدية على فريم الدخول", group = gEnt)
+
+// ---- Risk Management ----
+gRisk         = "إدارة المخاطر"
+i_slBufferAtr = input.float(0.2, "هامش الوقف خارج المنطقة (ATR)", minval = 0.0, step = 0.05, group = gRisk) // [ASSUMPTION]
+i_rr          = input.float(2.0, "نسبة المخاطرة : العائد", minval = 0.5, step = 0.5, group = gRisk)         // [ASSUMPTION]
+i_useRisk     = input.bool(false, "تفعيل تحجيم الصفقة حسب المخاطرة", group = gRisk)
+i_riskPct     = input.float(1.0, "نسبة المخاطرة لكل صفقة (%)", minval = 0.1, step = 0.1, group = gRisk)
+
+// ---- Visuals & Logging ----
+gVis          = "الرسومات والتتبع"
+i_showZones   = input.bool(true, "إظهار مناطق الفريم الأكبر", group = gVis)
+i_showSignals = input.bool(true, "إظهار إشارات الدخول/الخروج", group = gVis)
+i_log         = input.bool(true, "تفعيل التتبع (Logging)", group = gVis)
+
+// ====================== HTF (ANTI-REPAINT) ==========================
+// All values below are derived from CONFIRMED pivots (lagged by 'right'
+// bars) so they cannot repaint. Safe single-source idiom when needed:
+//   request.security(syminfo.tickerid, tf, src[1], barmerge.gaps_off, barmerge.lookahead_on)
+f_htf() =>
+    atrH = ta.atr(i_atrLen)
+    ph = ta.pivothigh(high, i_htfLeft, i_htfRight)
+    pl = ta.pivotlow(low,  i_htfLeft, i_htfRight)
+    var float ph1 = na
+    var float ph2 = na
+    var float pl1 = na
+    var float pl2 = na
+    if not na(ph)
+        ph2 := ph1
+        ph1 := ph
+    if not na(pl)
+        pl2 := pl1
+        pl1 := pl
+    upTrend   = not na(ph2) and not na(pl2) and ph1 > ph2 and pl1 > pl2   // HH + HL
+    downTrend = not na(ph2) and not na(pl2) and ph1 < ph2 and pl1 < pl2   // LH + LL
+
+    // Engulfing (body engulfs body) + explosive close, on H4
+    bullEngulf = close > open and close[1] < open[1] and close > open[1] and open < close[1] and close > high[1]
+    bearEngulf = close < open and close[1] > open[1] and close < open[1] and open > close[1] and close < low[1]
+
+    // 90-degree / super move strength
+    upMove = (close - ta.lowest(low,  i_superLook)) >= i_superAtrMult * atrH
+    dnMove = (ta.highest(high, i_superLook) - close) >= i_superAtrMult * atrH
+
+    okDem90 = not i_require90 or upMove
+    okSup90 = not i_require90 or dnMove
+    strongDem = not i_requireStrength or (not na(ph1) and close > ph1) // broke prior HTF high
+    strongSup = not i_requireStrength or (not na(pl1) and close < pl1) // broke prior HTF low
+
+    var float demTop = na
+    var float demBot = na
+    var float supTop = na
+    var float supBot = na
+    if bullEngulf and strongDem and okDem90
+        demTop := open[1]    // box from OPEN..CLOSE of the opposite (red) candle
+        demBot := close[1]
+    if bearEngulf and strongSup and okSup90
+        supTop := close[1]   // box from OPEN..CLOSE of the opposite (green) candle
+        supBot := open[1]
+
+    [upTrend, downTrend, demTop, demBot, supTop, supBot]
+
+[htfUp, htfDown, demTop, demBot, supTop, supBot] = request.security(syminfo.tickerid, i_htfTF, f_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+
+// ====================== CHART (M15) HELPERS =========================
+atrC = ta.atr(i_atrLen)
+
+// Price returned into the zone (overlap test)
+inDemand() => not na(demTop) and low  <= demTop and high >= demBot
+inSupply() => not na(supTop) and high >= supBot and low  <= supTop
+
+// Fakeout: wick pierces the zone edge then closes back, within window
+f_fakeoutLong() =>
+    brk = i_fakeoutAtrMult * atrC
+    res = false
+    for k = 0 to i_fakeoutBars - 1
+        if low[k] < demBot and low[k] >= demBot - brk and close > demBot
+            res := true
+    res
+f_fakeoutShort() =>
+    brk = i_fakeoutAtrMult * atrC
+    res = false
+    for k = 0 to i_fakeoutBars - 1
+        if high[k] > supTop and high[k] <= supTop + brk and close < supTop
+            res := true
+    res
+
+// Compression: volatility contraction near the zone (documented simplification)
+f_compression() => ta.atr(i_compFast) < ta.atr(i_compSlow)
+
+// LTF engulfing confirmation
+f_bullEngulfC() => close > open and close[1] < open[1] and close > open[1] and open <= close[1]
+f_bearEngulfC() => close < open and close[1] > open[1] and close < open[1] and open >= close[1]
+
+// ====================== ENTRY / EXIT LOGIC ==========================
+checkLongEntry(bool allow, bool trendOk, bool inZone, bool behOk, bool confOk) =>
+    allow and trendOk and inZone and behOk and confOk
+checkShortEntry(bool allow, bool trendOk, bool inZone, bool behOk, bool confOk) =>
+    allow and trendOk and inZone and behOk and confOk
+
+calculatePositionSize(float stopDist) =>
+    riskAmt = strategy.equity * i_riskPct / 100.0
+    (not i_useRisk or na(stopDist) or stopDist <= 0) ? na : riskAmt / stopDist
+
+logEntryReason(string side, float e, float sl, float tp) =>
+    if i_log
+        log.info("ENTRY {0} | price={1} SL={2} TP={3}", side, str.tostring(e), str.tostring(sl), str.tostring(tp))
+logExitReason(string side) =>
+    if i_log
+        log.info("EXIT order set for {0}", side)
+logIgnore(string side, string why) =>
+    if i_log
+        log.warning("IGNORED {0} | {1}", side, why)
+
+// --- assemble conditions ---
+behaviorLong  = f_fakeoutLong()  or f_compression()
+behaviorShort = f_fakeoutShort() or f_compression()
+
+trendOkLong   = not i_requireTrend or htfUp
+trendOkShort  = not i_requireTrend or htfDown
+behOkLong     = not i_requireBehavior or behaviorLong
+behOkShort    = not i_requireBehavior or behaviorShort
+confOkLong    = not i_requireConfirm  or f_bullEngulfC()
+confOkShort   = not i_requireConfirm  or f_bearEngulfC()
+
+flat   = strategy.position_size == 0
+goLong  = flat and checkLongEntry(i_allowLong, trendOkLong, inDemand(), behOkLong, confOkLong)
+goShort = flat and checkShortEntry(i_allowShort, trendOkShort, inSupply(), behOkShort, confOkShort)
+
+// sanity warning for illogical settings
+if barstate.islast and i_compFast >= i_compSlow
+    log.error("Compression fast ATR ({0}) should be < slow ATR ({1})", str.tostring(i_compFast), str.tostring(i_compSlow))
+
+float entryPrice = na
+float stopPrice  = na
+float tpPrice    = na
+
+if goLong
+    entryPrice := close
+    stopPrice  := demBot - i_slBufferAtr * atrC
+    riskDist    = entryPrice - stopPrice
+    tpPrice    := entryPrice + i_rr * riskDist
+    q = calculatePositionSize(riskDist)
+    if i_useRisk and not na(q)
+        strategy.entry("Long", strategy.long, qty = q)
+    else
+        strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop = stopPrice, limit = tpPrice)
+    logEntryReason("LONG", entryPrice, stopPrice, tpPrice)
+    logExitReason("LONG")
+else if i_allowLong and inDemand() and not behOkLong
+    logIgnore("LONG", "no fakeout/compression behavior")
+
+if goShort
+    entryPrice := close
+    stopPrice  := supTop + i_slBufferAtr * atrC
+    riskDist    = stopPrice - entryPrice
+    tpPrice    := entryPrice - i_rr * riskDist
+    q = calculatePositionSize(riskDist)
+    if i_useRisk and not na(q)
+        strategy.entry("Short", strategy.short, qty = q)
+    else
+        strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop = stopPrice, limit = tpPrice)
+    logEntryReason("SHORT", entryPrice, stopPrice, tpPrice)
+    logExitReason("SHORT")
+else if i_allowShort and inSupply() and not behOkShort
+    logIgnore("SHORT", "no fakeout/compression behavior")
+
+// ============================ VISUALS ===============================
+plot(i_showZones ? demTop : na, "Demand Top", color = color.new(color.green, 0), style = plot.style_linebr)
+plot(i_showZones ? demBot : na, "Demand Bot", color = color.new(color.green, 40), style = plot.style_linebr)
+plot(i_showZones ? supTop : na, "Supply Top", color = color.new(color.red, 40),  style = plot.style_linebr)
+plot(i_showZones ? supBot : na, "Supply Bot", color = color.new(color.red, 0),   style = plot.style_linebr)
+
+plotshape(i_showSignals and goLong,  title = "Buy",  style = shape.triangleup,   location = location.belowbar, color = color.new(color.green, 0), text = "شراء",  size = size.small)
+plotshape(i_showSignals and goShort, title = "Sell", style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 0),   text = "بيع", size = size.small)

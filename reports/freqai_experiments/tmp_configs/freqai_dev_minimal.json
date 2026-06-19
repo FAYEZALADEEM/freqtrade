@@ -1,0 +1,17 @@
+{
+    "freqai": {
+        "enabled": true,
+        "train_period_days": 5,
+        "backtest_period_days": 2,
+        "feature_parameters": {
+            "include_timeframes": ["15m"],
+            "include_corr_pairlist": [],
+            "label_period_candles": 8,
+            "include_shifted_candles": 1,
+            "indicator_periods_candles": [8, 14],
+            "DI_threshold": 0.5,
+            "principal_component_analysis": false,
+            "use_SVM_to_remove_outliers": false
+        }
+    }
+}

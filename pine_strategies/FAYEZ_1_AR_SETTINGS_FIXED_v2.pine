@@ -1,0 +1,425 @@
+//@version=6
+strategy("[FAYEZ 1] - عربي محسن", overlay=true, initial_capital=10000, currency=currency.USD, margin_long=0.25, margin_short=0.25, pyramiding=0, process_orders_on_close=true, max_boxes_count=100, max_labels_count=100, max_lines_count=100)
+
+//====================================================
+// 01) الإعدادات العامة
+//====================================================
+groupGeneral = "01 - الإعدادات العامة"
+enableLong  = input.bool(defval=true,  title="تفعيل صفقات الشراء", group=groupGeneral, tooltip="الأفضل: مفعّل. عطّله فقط إذا أردت اختبار البيع وحده.")
+enableShort = input.bool(defval=true,  title="تفعيل صفقات البيع", group=groupGeneral, tooltip="الأفضل: مفعّل. عطّله فقط إذا أردت اختبار الشراء وحده.")
+capitalInfo = input.float(defval=10000, title="رأس المال المرجعي بالدولار", minval=100, group=groupGeneral, tooltip="الأفضل: اجعله مطابقاً لرأس مال الباك تست. يُستخدم لحساب حجم الصفقة.")
+pointValue  = input.float(defval=10.0, title="قيمة النقطة بالدولار", minval=0.01, group=groupGeneral, tooltip="الأفضل للفوركس القياسي غالباً 10. عدّله حسب الرمز وحجم العقد الذي تستخدمه.")
+riskPercent = input.float(defval=1.0, title="نسبة المخاطرة لكل صفقة %", minval=0.1, maxval=10, step=0.1, group=groupGeneral, tooltip="الأفضل: 1%. ارفعها فقط بعد ثبات النتائج؛ 5% عالية المخاطر.")
+rr          = input.float(defval=3.2, title="نسبة الهدف إلى الوقف RR", minval=0.5, maxval=10, step=0.1, group=groupGeneral, tooltip="الأفضل المبدئي: 3.2. كلما زادت النسبة قلت فرص الوصول للهدف.")
+
+//====================================================
+// 02) فلتر الوقت
+//====================================================
+groupTime = "02 - فلتر الوقت - توقيت الرياض"
+useSession   = input.bool(defval=false, title="تفعيل فلتر الجلسة", group=groupTime, tooltip="الأفضل الحالي: غير مفعّل للحصول على صفقات أكثر. فعّله فقط إذا أردت حصر التداول في وقت محدد.")
+tradeSession = input.session(defval="1000-1900", title="جلسة التداول بتوقيت الرياض", group=groupTime, tooltip="يعمل فقط عند تفعيل فلتر الجلسة. القيمة 1000-1900 تعني من 10 صباحاً إلى 7 مساءً بتوقيت الرياض.")
+
+//====================================================
+// 03) الهيكل والسيولة
+//====================================================
+groupStructure = "03 - إعدادات الهيكل والسيولة"
+pivotLen          = input.int(defval=7,  title="قوة القمم والقيعان Pivot", minval=1, maxval=20, group=groupStructure, tooltip="الأفضل المبدئي: 7. رقم أقل يعطي إشارات أكثر وضجيج أعلى، رقم أكبر يعطي إشارات أقل وأنظف.")
+sweepLookback     = input.int(defval=60, title="مدى البحث عن السيولة", minval=10, maxval=300, group=groupStructure, tooltip="الأفضل المبدئي: 60 شمعة. يحدد أعلى/أدنى منطقة سيولة يتم كنسها.")
+maxBarsAfterSweep = input.int(defval=40, title="أقصى انتظار بعد الكنس حتى MSS", minval=3, maxval=100, group=groupStructure, tooltip="الأفضل المبدئي: 40 شمعة. إذا لم يظهر MSS خلال هذه المدة تُلغى الفرصة.")
+
+//====================================================
+// 04) فلتر الاتجاه العام
+//====================================================
+groupBias = "04 - فلتر الاتجاه العام"
+useBias    = input.bool(defval=true, title="تفعيل فلتر الاتجاه العام", group=groupBias, tooltip="الأفضل: مفعّل. يمنع الشراء عكس الاتجاه العام والبيع عكسه.")
+biasTf     = input.timeframe(defval="60", title="فريم الاتجاه العام", group=groupBias, tooltip="الأفضل المبدئي: 60 دقيقة. على M15 يعطي فلتر اتجاه أعلى بدون تأخير كبير.")
+biasEmaLen = input.int(defval=50, title="طول متوسط الاتجاه EMA", minval=10, maxval=300, group=groupBias, tooltip="الأفضل المبدئي: 50. السعر فوقه يدعم الشراء وتحته يدعم البيع.")
+
+//====================================================
+// 05) فجوة القيمة العادلة FVG
+//====================================================
+groupFvg = "05 - إعدادات FVG"
+useFvg    = input.bool(defval=false, title="السماح بالدخول من FVG", group=groupFvg, tooltip="الأفضل الحالي: غير مفعّل. فعّله فقط للمقارنة لأنه قد يزيد الإشارات الضعيفة.")
+minFvgAtr = input.float(defval=0.10, title="أقل حجم FVG مقارنة بالـ ATR", minval=0.0, maxval=3.0, step=0.05, group=groupFvg, tooltip="الأفضل عند تفعيل FVG: 0.10. رفعه يجعل الفجوات المطلوبة أقوى وأقل عدداً.")
+drawFvg   = input.bool(defval=false, title="رسم مناطق FVG", group=groupFvg, tooltip="الأفضل: غير مفعّل لتخفيف زحمة الرسم. فعّله عند المراجعة البصرية فقط.")
+
+//====================================================
+// 06) مناطق Order Block
+//====================================================
+groupOb = "06 - إعدادات Order Block"
+useOb        = input.bool(defval=true, title="السماح بالدخول من Order Block", group=groupOb, tooltip="الأفضل: مفعّل. هو مصدر الدخول الأساسي بعد Sweep + MSS.")
+obSearchBars = input.int(defval=12, title="عدد الشموع للبحث عن آخر شمعة عكسية", minval=2, maxval=30, group=groupOb, tooltip="الأفضل المبدئي: 12. يبحث عن آخر شمعة عكسية قبل MSS لتكوين منطقة الدخول.")
+drawOb       = input.bool(defval=true, title="رسم مناطق Order Block", group=groupOb, tooltip="الأفضل: مفعّل عند الفحص البصري لمعرفة منطقة الدخول بوضوح.")
+
+//====================================================
+// 07) Premium / Discount
+//====================================================
+groupPd = "07 - Premium / Discount"
+usePd      = input.bool(defval=true, title="تفعيل فلتر الخصم/العلاوة", group=groupPd, tooltip="الأفضل: مفعّل. الشراء من الخصم أسفل 50% والبيع من العلاوة أعلى 50%.")
+pdLookback = input.int(defval=100, title="مدى حساب خط 50%", minval=20, maxval=500, group=groupPd, tooltip="الأفضل المبدئي: 100 شمعة. يحدد النطاق المستخدم لحساب خط التوازن.")
+
+//====================================================
+// 08) إدارة الصفقة والفلاتر
+//====================================================
+groupRisk = "08 - إدارة الصفقة والفلاتر"
+slBufferTicks      = input.int(defval=30, title="هامش وقف الخسارة بالتيك", minval=0, maxval=1000, group=groupRisk, tooltip="الأفضل للفوركس خماسي الأرقام: 30 تيك تقريباً = 3 نقاط. للذهب أو الرموز الأخرى عدّله حسب حركة الرمز.")
+useAtrDisplacement = input.bool(defval=true, title="اشتراط شمعة اندفاع قوية", group=groupRisk, tooltip="الأفضل: مفعّل. يقلل الإشارات الضعيفة التي لا يظهر فيها اندفاع بعد الكنس.")
+atrLen             = input.int(defval=14, title="طول ATR", minval=5, maxval=100, group=groupRisk, tooltip="الأفضل: 14. يستخدم لقياس قوة الاندفاع والحد الأدنى للمخاطرة.")
+atrMult            = input.float(defval=1.0, title="قوة الاندفاع المطلوبة ATR", minval=0.1, maxval=5, step=0.1, group=groupRisk, tooltip="الأفضل المبدئي: 1.0. رفعه يجعل الاستراتيجية أكثر صرامة وأقل صفقات.")
+
+//====================================================
+// الحسابات الأساسية
+//====================================================
+atr = ta.atr(atrLen)
+ph  = ta.pivothigh(high, pivotLen, pivotLen)
+pl  = ta.pivotlow(low, pivotLen, pivotLen)
+
+// فلتر الاتجاه العام من فريم أعلى
+htfClose = request.security(syminfo.tickerid, biasTf, close, barmerge.gaps_off, barmerge.lookahead_off)
+htfEma   = request.security(syminfo.tickerid, biasTf, ta.ema(close, biasEmaLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+biasLong  = not useBias or htfClose > htfEma
+biasShort = not useBias or htfClose < htfEma
+
+// مناطق السيولة قبل الشمعة الحالية
+priorHigh = ta.highest(high[1], sweepLookback)
+priorLow  = ta.lowest(low[1], sweepLookback)
+
+buySideSweep  = not na(priorHigh) and high > priorHigh and close < priorHigh
+sellSideSweep = not na(priorLow)  and low  < priorLow  and close > priorLow
+
+//====================================================
+// حالة الكنس وانتظار MSS
+//====================================================
+var bool  waitingBullMss  = false
+var bool  waitingBearMss  = false
+var int   bullSweepBar    = na
+var int   bearSweepBar    = na
+var float bullPurgeLow    = na
+var float bearPurgeHigh   = na
+
+var float bullMssSwingHigh = na
+var int   bullMssSwingHighBar = na
+var float bearMssSwingLow  = na
+var int   bearMssSwingLowBar = na
+
+if sellSideSweep
+    waitingBullMss      := true
+    waitingBearMss      := false
+    bullSweepBar        := bar_index
+    bullPurgeLow        := low
+    bullMssSwingHigh    := na
+    bullMssSwingHighBar := na
+
+if buySideSweep
+    waitingBearMss     := true
+    waitingBullMss     := false
+    bearSweepBar       := bar_index
+    bearPurgeHigh      := high
+    bearMssSwingLow    := na
+    bearMssSwingLowBar := na
+
+// إصلاح مهم: لا نستخدم إلا Pivot تكوّن فعلياً بعد شمعة الكنس، وليس Pivot قديماً تأكد متأخراً.
+confirmedPivotBar = bar_index - pivotLen
+
+if waitingBullMss and not na(ph) and confirmedPivotBar > nz(bullSweepBar, -1)
+    bullMssSwingHigh    := ph
+    bullMssSwingHighBar := confirmedPivotBar
+
+if waitingBearMss and not na(pl) and confirmedPivotBar > nz(bearSweepBar, -1)
+    bearMssSwingLow    := pl
+    bearMssSwingLowBar := confirmedPivotBar
+
+// انتهاء صلاحية انتظار MSS
+if waitingBullMss and bar_index - nz(bullSweepBar, bar_index) > maxBarsAfterSweep
+    waitingBullMss      := false
+    bullMssSwingHigh    := na
+    bullMssSwingHighBar := na
+
+if waitingBearMss and bar_index - nz(bearSweepBar, bar_index) > maxBarsAfterSweep
+    waitingBearMss     := false
+    bearMssSwingLow    := na
+    bearMssSwingLowBar := na
+
+bullBos = waitingBullMss and not na(bullMssSwingHigh) and close > bullMssSwingHigh and close[1] <= bullMssSwingHigh
+bearBos = waitingBearMss and not na(bearMssSwingLow)  and close < bearMssSwingLow  and close[1] >= bearMssSwingLow
+
+displacementOk = not useAtrDisplacement or (not na(atr) and math.abs(close - open) >= atr * atrMult)
+
+bullMss = bullBos and displacementOk
+bearMss = bearBos and displacementOk
+
+if bullMss
+    waitingBullMss := false
+
+if bearMss
+    waitingBearMss := false
+
+// تتبع آخر MSS حتى لا يتم استخدام مناطق قديمة
+var int lastBullMssBar = na
+var int lastBearMssBar = na
+
+if bullMss
+    lastBullMssBar := bar_index
+
+if bearMss
+    lastBearMssBar := bar_index
+
+//====================================================
+// FVG
+//====================================================
+bullFvg = not na(atr) and low > high[2] and (low - high[2]) >= atr * minFvgAtr
+bearFvg = not na(atr) and high < low[2] and (low[2] - high) >= atr * minFvgAtr
+
+var float bullFvgTop = na
+var float bullFvgBot = na
+var int   bullFvgBar = na
+var float bearFvgTop = na
+var float bearFvgBot = na
+var int   bearFvgBar = na
+
+// إلغاء FVG إذا كُسرت قبل الدخول
+if not na(bullFvgBot) and close < bullFvgBot
+    bullFvgTop := na
+    bullFvgBot := na
+    bullFvgBar := na
+
+if not na(bearFvgTop) and close > bearFvgTop
+    bearFvgTop := na
+    bearFvgBot := na
+    bearFvgBar := na
+
+if bullFvg
+    bullFvgTop := low
+    bullFvgBot := high[2]
+    bullFvgBar := bar_index
+
+if bearFvg
+    bearFvgTop := low[2]
+    bearFvgBot := high
+    bearFvgBar := bar_index
+
+touchBullFvg = (
+     useFvg
+     and not na(bullFvgTop)
+     and not na(bullFvgBot)
+     and not na(bullFvgBar)
+     and not na(lastBullMssBar)
+     and bullFvgBar >= lastBullMssBar
+     and low <= bullFvgTop
+     and high >= bullFvgBot
+)
+
+touchBearFvg = (
+     useFvg
+     and not na(bearFvgTop)
+     and not na(bearFvgBot)
+     and not na(bearFvgBar)
+     and not na(lastBearMssBar)
+     and bearFvgBar >= lastBearMssBar
+     and high >= bearFvgBot
+     and low <= bearFvgTop
+)
+
+//====================================================
+// Order Block
+//====================================================
+f_findBullObTop(_bars) =>
+    float result = na
+    for i = 1 to _bars
+        if close[i] < open[i] and na(result)
+            result := high[i]
+    result
+
+f_findBullObBot(_bars) =>
+    float result = na
+    for i = 1 to _bars
+        if close[i] < open[i] and na(result)
+            result := low[i]
+    result
+
+f_findBearObTop(_bars) =>
+    float result = na
+    for i = 1 to _bars
+        if close[i] > open[i] and na(result)
+            result := high[i]
+    result
+
+f_findBearObBot(_bars) =>
+    float result = na
+    for i = 1 to _bars
+        if close[i] > open[i] and na(result)
+            result := low[i]
+    result
+
+var float bullObTop = na
+var float bullObBot = na
+var int   bullObBar = na
+var float bearObTop = na
+var float bearObBot = na
+var int   bearObBar = na
+
+// إلغاء OB إذا كُسر قبل الدخول
+if not na(bullObBot) and close < bullObBot
+    bullObTop := na
+    bullObBot := na
+    bullObBar := na
+
+if not na(bearObTop) and close > bearObTop
+    bearObTop := na
+    bearObBot := na
+    bearObBar := na
+
+if bullMss
+    bullObTop := f_findBullObTop(obSearchBars)
+    bullObBot := f_findBullObBot(obSearchBars)
+    bullObBar := bar_index
+
+if bearMss
+    bearObTop := f_findBearObTop(obSearchBars)
+    bearObBot := f_findBearObBot(obSearchBars)
+    bearObBar := bar_index
+
+touchBullOb = (
+     useOb
+     and not na(bullObTop)
+     and not na(bullObBot)
+     and not na(bullObBar)
+     and not na(lastBullMssBar)
+     and bullObBar >= lastBullMssBar
+     and low <= bullObTop
+     and high >= bullObBot
+)
+
+touchBearOb = (
+     useOb
+     and not na(bearObTop)
+     and not na(bearObBot)
+     and not na(bearObBar)
+     and not na(lastBearMssBar)
+     and bearObBar >= lastBearMssBar
+     and high >= bearObBot
+     and low <= bearObTop
+)
+
+//====================================================
+// Premium / Discount
+//====================================================
+rangeHigh = ta.highest(high, pdLookback)
+rangeLow  = ta.lowest(low, pdLookback)
+rangeEq   = (rangeHigh + rangeLow) / 2.0
+
+inDiscount = not usePd or close < rangeEq
+inPremium  = not usePd or close > rangeEq
+
+// توقيت الرياض
+inSession = not useSession or not na(time(timeframe.period, tradeSession, "Asia/Riyadh"))
+
+//====================================================
+// حالة setup بعد MSS
+//====================================================
+var bool bullSetupActive = false
+var bool bearSetupActive = false
+
+if bullMss
+    bullSetupActive := true
+    bearSetupActive := false
+
+if bearMss
+    bearSetupActive := true
+    bullSetupActive := false
+
+// انتهاء صلاحية setup بعد MSS
+if bullSetupActive and bar_index - nz(lastBullMssBar, bar_index) > maxBarsAfterSweep * 3
+    bullSetupActive := false
+
+if bearSetupActive and bar_index - nz(lastBearMssBar, bar_index) > maxBarsAfterSweep * 3
+    bearSetupActive := false
+
+//====================================================
+// إشارات الدخول
+//====================================================
+longSignal = (
+     enableLong
+     and barstate.isconfirmed
+     and inSession
+     and biasLong
+     and bullSetupActive
+     and inDiscount
+     and (touchBullFvg or touchBullOb)
+)
+
+shortSignal = (
+     enableShort
+     and barstate.isconfirmed
+     and inSession
+     and biasShort
+     and bearSetupActive
+     and inPremium
+     and (touchBearFvg or touchBearOb)
+)
+
+//====================================================
+// إدارة المخاطر والأوامر
+//====================================================
+tickBuffer = syminfo.mintick * slBufferTicks
+minRisk    = not na(atr) ? atr * 0.5 : na
+
+longZoneStop  = nz(bullPurgeLow, low)   - tickBuffer
+shortZoneStop = nz(bearPurgeHigh, high) + tickBuffer
+
+longStopValid  = not na(longZoneStop)  and longZoneStop < close
+shortStopValid = not na(shortZoneStop) and shortZoneStop > close
+
+longRisk  = longStopValid  and not na(minRisk) ? math.max(close - longZoneStop,  minRisk) : na
+shortRisk = shortStopValid and not na(minRisk) ? math.max(shortZoneStop - close, minRisk) : na
+
+riskUsd = capitalInfo * riskPercent / 100.0
+
+longQty  = not na(longRisk)  and longRisk  > syminfo.mintick ? riskUsd / (longRisk  * pointValue) : na
+shortQty = not na(shortRisk) and shortRisk > syminfo.mintick ? riskUsd / (shortRisk * pointValue) : na
+
+longTp  = not na(longRisk)  ? close + longRisk  * rr : na
+shortTp = not na(shortRisk) ? close - shortRisk * rr : na
+
+if longSignal and strategy.position_size == 0 and not na(longQty) and not na(longTp)
+    strategy.entry("شراء", strategy.long, qty=longQty)
+    strategy.exit("خروج شراء", "شراء", stop=longZoneStop, limit=longTp)
+    bullSetupActive := false
+    alert('{"symbol":"' + syminfo.ticker + '","action":"BUY","price":' + str.tostring(close) + ',"sl":' + str.tostring(longZoneStop) + ',"tp":' + str.tostring(longTp) + ',"comment":"fayez1_long"}', alert.freq_once_per_bar_close)
+
+if shortSignal and strategy.position_size == 0 and not na(shortQty) and not na(shortTp)
+    strategy.entry("بيع", strategy.short, qty=shortQty)
+    strategy.exit("خروج بيع", "بيع", stop=shortZoneStop, limit=shortTp)
+    bearSetupActive := false
+    alert('{"symbol":"' + syminfo.ticker + '","action":"SELL","price":' + str.tostring(close) + ',"sl":' + str.tostring(shortZoneStop) + ',"tp":' + str.tostring(shortTp) + ',"comment":"fayez1_short"}', alert.freq_once_per_bar_close)
+
+//====================================================
+// الرسوم على الشارت
+//====================================================
+plot(rangeEq, title="خط التوازن 50%", color=color.new(color.gray, 20), linewidth=1)
+plot(useBias ? htfEma : na, title="متوسط الاتجاه العام EMA", color=color.new(color.orange, 0), linewidth=2)
+
+plotshape(buySideSweep,  title="كنس سيولة أعلى القمم", style=shape.triangledown, location=location.abovebar, color=color.red,  text="كنس", size=size.tiny)
+plotshape(sellSideSweep, title="كنس سيولة أسفل القيعان", style=shape.triangleup,   location=location.belowbar, color=color.lime, text="كنس", size=size.tiny)
+
+plotshape(bullBos, title="BOS صاعد", style=shape.labelup,   location=location.belowbar, color=color.new(color.green, 0), text="BOS", textcolor=color.white, size=size.tiny)
+plotshape(bearBos, title="BOS هابط", style=shape.labeldown, location=location.abovebar, color=color.new(color.red,   0), text="BOS", textcolor=color.white, size=size.tiny)
+
+plotshape(bullMss, title="MSS صاعد", style=shape.labelup,   location=location.belowbar, color=color.new(color.teal,   0), text="MSS", textcolor=color.white, size=size.small)
+plotshape(bearMss, title="MSS هابط", style=shape.labeldown, location=location.abovebar, color=color.new(color.maroon, 0), text="MSS", textcolor=color.white, size=size.small)
+
+plotshape(longSignal,  title="إشارة شراء", style=shape.arrowup,   location=location.belowbar, color=color.green, text="شراء", size=size.normal)
+plotshape(shortSignal, title="إشارة بيع",  style=shape.arrowdown, location=location.abovebar, color=color.red,   text="بيع",  size=size.normal)
+
+if drawFvg and bullFvg
+    box.new(left=bar_index - 2, top=bullFvgTop, right=bar_index + 30, bottom=bullFvgBot, bgcolor=color.new(color.green, 85), border_color=color.new(color.green, 30))
+
+if drawFvg and bearFvg
+    box.new(left=bar_index - 2, top=bearFvgTop, right=bar_index + 30, bottom=bearFvgBot, bgcolor=color.new(color.red, 85), border_color=color.new(color.red, 30))
+
+if drawOb and bullMss and not na(bullObTop) and not na(bullObBot)
+    box.new(left=bar_index, top=bullObTop, right=bar_index + 40, bottom=bullObBot, bgcolor=color.new(color.blue, 85), border_color=color.new(color.blue, 25))
+
+if drawOb and bearMss and not na(bearObTop) and not na(bearObBot)
+    box.new(left=bar_index, top=bearObTop, right=bar_index + 40, bottom=bearObBot, bgcolor=color.new(color.purple, 85), border_color=color.new(color.purple, 25))

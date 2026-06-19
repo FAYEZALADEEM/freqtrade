@@ -1,0 +1,66 @@
+//@version=6
+strategy("07 - Opening Range Breakout ORB", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: يتم بناء ORB من أول نطاق زمني محدد داخل الجلسة، ثم يتم التداول عند إغلاق السعر خارج النطاق مع فلاتر VWAP وRSI وRVOL.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بإشارات الشراء أعلى نطاق الافتتاح.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بإشارات البيع أسفل نطاق الافتتاح.")
+orbSession = input.session("0930-0945", "جلسة بناء ORB", group = grp03, tooltip = "الفترة التي يتم خلالها حساب أعلى وأدنى نطاق الافتتاح.")
+oneTradePerDay = input.bool(true, "صفقة واحدة يومياً", group = grp03, tooltip = "يمنع تكرار الدخول بعد أول صفقة في اليوم.")
+rvolLen = input.int(20, "طول متوسط الحجم", minval = 1, maxval = 200, group = grp04, tooltip = "يستخدم لحساب RVOL مقارنة بمتوسط الحجم.")
+rvolMin = input.float(1.5, "أدنى RVOL", minval = 0.1, step = 0.1, group = grp04, tooltip = "يشترط أن يكون الحجم النسبي أعلى من هذه القيمة.")
+rsiLen = input.int(14, "طول RSI", minval = 1, maxval = 100, group = grp04, tooltip = "طول RSI المستخدم لتأكيد اتجاه الاختراق.")
+useVwapFilter = input.bool(true, "تفعيل فلتر VWAP", group = grp04, tooltip = "يشترط أن يكون الشراء أعلى VWAP والبيع أسفل VWAP.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف احتياطي إذا كان الطرف المقابل للنطاق غير مناسب.")
+rr = input.float(1.5, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف مقابل الوقف، ويمكن جعله 1 لاستخدام هدف يساوي النطاق.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى نقطة الدخول بعد تحرك السعر لصالح الصفقة.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة قبل نقل الوقف للتعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر إضافي للتداول معطل افتراضياً.")
+tradeSession = input.session("0930-1200", "وقت التداول بعد ORB", group = grp09, tooltip = "الفترة المسموح فيها بالاختراق إذا تم تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض إشارات الشراء والبيع على الشارت.")
+
+newDay = ta.change(time("D")) != 0
+inOrb = not na(time(timeframe.period, orbSession))
+inTradeSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+var float orbHigh = na
+var float orbLow = na
+var bool tradedToday = false
+if newDay
+    orbHigh := na
+    orbLow := na
+    tradedToday := false
+if inOrb
+    orbHigh := na(orbHigh) ? high : math.max(orbHigh, high)
+    orbLow := na(orbLow) ? low : math.min(orbLow, low)
+orbReady = not inOrb and not na(orbHigh) and not na(orbLow)
+rsi = ta.rsi(close, rsiLen)
+rvol = volume / math.max(ta.sma(volume, rvolLen), 1)
+vwap = ta.vwap(hlc3)
+canTrade = inTradeSession and orbReady and (not oneTradePerDay or not tradedToday)
+longSignal = enableLong and canTrade and close > orbHigh and rvol > rvolMin and rsi > 50 and (not useVwapFilter or close > vwap)
+shortSignal = enableShort and canTrade and close < orbLow and rvol > rvolMin and rsi < 50 and (not useVwapFilter or close < vwap)
+if longSignal
+    strategy.entry("شراء ORB", strategy.long)
+    tradedToday := true
+if shortSignal
+    strategy.entry("بيع ORB", strategy.short)
+    tradedToday := true
+risk = math.max(stopLossPips * pipSize, math.abs(orbHigh - orbLow))
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - risk
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + risk
+strategy.exit("خروج شراء ORB", "شراء ORB", stop = longStop, limit = strategy.position_avg_price + risk * rr)
+strategy.exit("خروج بيع ORB", "بيع ORB", stop = shortStop, limit = strategy.position_avg_price - risk * rr)
+plot(orbHigh, "ORB High", color = color.new(color.green, 20))
+plot(orbLow, "ORB Low", color = color.new(color.red, 20))
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء Opening Range Breakout")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع Opening Range Breakout")

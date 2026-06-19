@@ -1,0 +1,475 @@
+//@version=6
+strategy("ICT Sniper TV Match 2025", shorttitle="ICT Sniper Match", overlay=true, initial_capital=10000, currency=currency.USD, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0, margin_long=0.25, margin_short=0.25, calc_on_every_tick=false, process_orders_on_close=true, max_boxes_count=100, max_labels_count=300, max_lines_count=300)
+
+//====================================================
+// 1. Inputs
+//====================================================
+
+groupGeneral = "الإعدادات العامة"
+tradeLong      = input.bool(true,  "تفعيل صفقات الشراء Long", group=groupGeneral)
+tradeShort     = input.bool(true,  "تفعيل صفقات البيع Short", group=groupGeneral)
+contractsQty   = input.float(1.0,  "حجم العقد / الكمية", minval=0.01, step=0.01, group=groupGeneral)
+useConfirmed   = input.bool(true,  "إظهار الإشارات بعد إغلاق الشمعة فقط", group=groupGeneral)
+
+groupValidation = "مطابقة TradingView / Python"
+validationStart = input.time(timestamp("Asia/Riyadh", 2025, 1, 1, 0, 0), "بداية المطابقة", group=groupValidation)
+validationEnd   = input.time(timestamp("Asia/Riyadh", 2025, 12, 31, 23, 59), "نهاية المطابقة", group=groupValidation)
+inValidationRange = time >= validationStart and time <= validationEnd
+
+groupStructure = "إعدادات الهيكل والاتجاه"
+pivotLen        = input.int(3, "عدد شموع تأكيد القمة/القاع Pivot", minval=1, maxval=20, group=groupStructure)
+useHTFBias      = input.bool(true, "تفعيل فلتر اتجاه الفريم الأعلى", group=groupStructure)
+htfTf           = input.timeframe("240", "الفريم الأعلى لتحديد الاتجاه", group=groupStructure)
+displacementATR = input.float(0.8, "قوة الحركة بعد البلوك ATR", minval=0.1, step=0.1, group=groupStructure)
+
+groupOB = "إعدادات Order Block"
+obLookback    = input.int(20, "عدد الشموع للبحث عن آخر شمعة عكسية", minval=3, maxval=100, group=groupOB)
+maxTouches    = input.int(2, "أقصى عدد لمسات مسموح للبلوك", minval=1, maxval=5, group=groupOB)
+extendBars    = input.int(120, "تمديد مناطق البلوك يمينًا", minval=10, maxval=500, group=groupOB)
+invalidateMid = input.bool(true, "إلغاء البلوك عند اختراق منتصفه", group=groupOB)
+
+groupLiquidity = "إعدادات السيولة Turtle Soup"
+useLiquidityFilter = input.bool(true, "اشتراط ضرب السيولة قبل الدخول", group=groupLiquidity)
+liquidityLookback  = input.int(20, "عدد الشموع لتحديد قمم/قيعان السيولة", minval=5, maxval=200, group=groupLiquidity)
+
+groupFVG = "إعدادات FVG"
+useFVGFilter = input.bool(false, "اشتراط وجود FVG بنفس الاتجاه", group=groupFVG)
+drawFVG      = input.bool(true, "رسم آخر FVG", group=groupFVG)
+
+groupFib = "إعدادات فيبوناتشي"
+useFibFilter = input.bool(false, "تفعيل فلتر فيبو 50% - 79%", group=groupFib)
+fibMin       = input.float(0.50, "أقل نسبة فيبو مسموحة", minval=0.0, maxval=1.0, step=0.01, group=groupFib)
+fibMax       = input.float(0.79, "أقصى نسبة فيبو مسموحة", minval=0.0, maxval=1.0, step=0.01, group=groupFib)
+
+groupPsych = "إعدادات الأسعار النفسية"
+usePsychFilter = input.bool(false, "تفعيل فلتر الرقم النفسي 00 / 50 / 80", group=groupPsych)
+pipSize        = input.float(0.0001, "حجم النقطة Pip Size", step=0.00001, group=groupPsych)
+psychTolerance = input.float(5.0, "هامش القرب من الرقم النفسي بالنقاط", minval=0.0, step=0.5, group=groupPsych)
+
+groupSession = "إعدادات الجلسات بتوقيت الرياض"
+useKillZone   = input.bool(true, "تفعيل فلتر Kill Zone", group=groupSession)
+londonSession = input.session("1000-1300", "جلسة لندن - توقيت الرياض", group=groupSession)
+nySession     = input.session("1600-1900", "جلسة نيويورك - توقيت الرياض", group=groupSession)
+
+groupRisk = "إدارة المخاطر"
+rrRatio      = input.float(2.0, "نسبة العائد إلى المخاطرة Risk/Reward", minval=0.5, step=0.1, group=groupRisk)
+slBufferPips = input.float(3.0, "هامش وقف الخسارة بالنقاط", minval=0.0, step=0.5, group=groupRisk)
+useFixedTP   = input.bool(false, "استخدام هدف ثابت بالنقاط بدل RR", group=groupRisk)
+fixedTPPips  = input.float(50.0, "الهدف الثابت بالنقاط", minval=1.0, step=1.0, group=groupRisk)
+
+groupVisual = "إعدادات الرسم"
+showBOSLabels = input.bool(true, "عرض BOS / CHoCH", group=groupVisual)
+showOB        = input.bool(true, "عرض Order Blocks", group=groupVisual)
+showLiquidity = input.bool(true, "عرض إشارات ضرب السيولة", group=groupVisual)
+showSessions  = input.bool(true, "تظليل جلسات Kill Zone", group=groupVisual)
+
+//====================================================
+// Helper Functions
+//====================================================
+
+inSession(sess) =>
+    not na(time(timeframe.period, sess, "Asia/Riyadh"))
+
+// فلتر الرقم النفسي: قريب من 00 أو 50 أو 80
+isPsychLevel(price) =>
+    pips = price / pipSize
+    mod100 = pips - math.floor(pips / 100.0) * 100.0
+    near00 = math.min(mod100, 100.0 - mod100) <= psychTolerance
+    near50 = math.abs(mod100 - 50.0) <= psychTolerance
+    near80 = math.abs(mod100 - 80.0) <= psychTolerance
+    near00 or near50 or near80
+
+// دالة اتجاه الفريم الأعلى باستخدام كسر آخر قمة/قاع مؤكدة
+f_htfBias(_len) =>
+    var float htfSwingHigh = na
+    var float htfSwingLow  = na
+    var int bias = 0
+    phHTF = ta.pivothigh(high, _len, _len)
+    plHTF = ta.pivotlow(low, _len, _len)
+    if not na(phHTF)
+        htfSwingHigh := phHTF
+    if not na(plHTF)
+        htfSwingLow := plHTF
+    if not na(htfSwingHigh) and close > htfSwingHigh
+        bias := 1
+    else if not na(htfSwingLow) and close < htfSwingLow
+        bias := -1
+    bias
+
+// البحث عن آخر شمعة هابطة/صاعدة قبل الحركة القوية
+f_lastBearish(_lookback) =>
+    float zHigh = na
+    float zLow  = na
+    int zBar    = na
+    for i = 1 to _lookback
+        if na(zBar) and close[i] < open[i]
+            zHigh := high[i]
+            zLow  := low[i]
+            zBar  := bar_index - i
+    [zHigh, zLow, zBar]
+
+f_lastBullish(_lookback) =>
+    float zHigh = na
+    float zLow  = na
+    int zBar    = na
+    for i = 1 to _lookback
+        if na(zBar) and close[i] > open[i]
+            zHigh := high[i]
+            zLow  := low[i]
+            zBar  := bar_index - i
+    [zHigh, zLow, zBar]
+
+//====================================================
+// Common Values
+//====================================================
+
+isLondon  = inSession(londonSession)
+isNY      = inSession(nySession)
+sessionOk = not useKillZone or isLondon or isNY
+
+confirmedOk = not useConfirmed or barstate.isconfirmed
+
+atr    = ta.atr(14)
+buffer = slBufferPips * pipSize
+
+htfBias = request.security(syminfo.tickerid, htfTf, f_htfBias(pivotLen), barmerge.gaps_off, barmerge.lookahead_off)
+
+biasLongOk  = not useHTFBias or htfBias == 1
+biasShortOk = not useHTFBias or htfBias == -1
+
+//====================================================
+// 2. Market Structure
+//====================================================
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+var float prevSwingHigh = na
+var float prevSwingLow  = na
+var int marketBias = 0
+
+if not na(ph)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := ph
+
+if not na(pl)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := pl
+
+bullBOS = confirmedOk and not na(lastSwingHigh) and close > lastSwingHigh
+bearBOS = confirmedOk and not na(lastSwingLow) and close < lastSwingLow
+
+bullCHoCH = bullBOS and marketBias == -1
+bearCHoCH = bearBOS and marketBias == 1
+
+if bullBOS
+    marketBias := 1
+if bearBOS
+    marketBias := -1
+
+//====================================================
+// 3. Liquidity Logic
+//====================================================
+
+liqHigh = ta.highest(high[1], liquidityLookback)
+liqLow  = ta.lowest(low[1], liquidityLookback)
+
+bearLiquiditySweep = confirmedOk and high > liqHigh and close < liqHigh
+bullLiquiditySweep = confirmedOk and low < liqLow and close > liqLow
+
+liquidityLongOk  = not useLiquidityFilter or bullLiquiditySweep or bullLiquiditySweep[1] or bullLiquiditySweep[2] or bullLiquiditySweep[3]
+liquidityShortOk = not useLiquidityFilter or bearLiquiditySweep or bearLiquiditySweep[1] or bearLiquiditySweep[2] or bearLiquiditySweep[3]
+
+//====================================================
+// 4. FVG Logic
+//====================================================
+
+bullFVG = low > high[2]
+bearFVG = high < low[2]
+
+var float lastBullFVGTop = na
+var float lastBullFVGBot = na
+var float lastBearFVGTop = na
+var float lastBearFVGBot = na
+
+var box bullFVGBox = na
+var box bearFVGBox = na
+
+if bullFVG
+    lastBullFVGTop := low
+    lastBullFVGBot := high[2]
+    if drawFVG
+        if not na(bullFVGBox)
+            box.delete(bullFVGBox)
+        bullFVGBox := box.new(
+             left=bar_index - 2,
+             top=lastBullFVGTop,
+             right=bar_index + extendBars,
+             bottom=lastBullFVGBot,
+             bgcolor=color.new(color.green, 85),
+             border_color=color.new(color.green, 30))
+
+if bearFVG
+    lastBearFVGTop := low[2]
+    lastBearFVGBot := high
+    if drawFVG
+        if not na(bearFVGBox)
+            box.delete(bearFVGBox)
+        bearFVGBox := box.new(
+             left=bar_index - 2,
+             top=lastBearFVGTop,
+             right=bar_index + extendBars,
+             bottom=lastBearFVGBot,
+             bgcolor=color.new(color.red, 85),
+             border_color=color.new(color.red, 30))
+
+fvgLongOk  = not useFVGFilter or not na(lastBullFVGTop)
+fvgShortOk = not useFVGFilter or not na(lastBearFVGTop)
+
+//====================================================
+// 5. Order Block Logic
+//====================================================
+
+var float bullOBHigh = na
+var float bullOBLow  = na
+var float bearOBHigh = na
+var float bearOBLow  = na
+
+var int bullOBBar = na
+var int bearOBBar = na
+
+var int bullTouches = 0
+var int bearTouches = 0
+
+var bool bullOBValid = false
+var bool bearOBValid = false
+
+var box bullOBBox = na
+var box bearOBBox = na
+
+// تكوين OB شرائي بعد BOS صاعد وحركة قوية
+bullDisplacement = bullBOS and math.abs(close - open) >= atr * displacementATR
+if bullDisplacement
+    [obH, obL, obB] = f_lastBearish(obLookback)
+    if not na(obH) and not na(obL)
+        bullOBHigh := obH
+        bullOBLow  := obL
+        bullOBBar  := obB
+        bullTouches := 0
+        bullOBValid := true
+        if showOB
+            if not na(bullOBBox)
+                box.delete(bullOBBox)
+            bullOBBox := box.new(
+                 left=bullOBBar,
+                 top=bullOBHigh,
+                 right=bar_index + extendBars,
+                 bottom=bullOBLow,
+                 bgcolor=color.new(color.green, 80),
+                 border_color=color.green)
+
+// تكوين OB بيعي بعد BOS هابط وحركة قوية
+bearDisplacement = bearBOS and math.abs(close - open) >= atr * displacementATR
+if bearDisplacement
+    [obH2, obL2, obB2] = f_lastBullish(obLookback)
+    if not na(obH2) and not na(obL2)
+        bearOBHigh := obH2
+        bearOBLow  := obL2
+        bearOBBar  := obB2
+        bearTouches := 0
+        bearOBValid := true
+        if showOB
+            if not na(bearOBBox)
+                box.delete(bearOBBox)
+            bearOBBox := box.new(
+                 left=bearOBBar,
+                 top=bearOBHigh,
+                 right=bar_index + extendBars,
+                 bottom=bearOBLow,
+                 bgcolor=color.new(color.red, 80),
+                 border_color=color.red)
+
+// تمديد البوكسات
+if showOB and not na(bullOBBox)
+    box.set_right(bullOBBox, bar_index + extendBars)
+if showOB and not na(bearOBBox)
+    box.set_right(bearOBBox, bar_index + extendBars)
+
+// منتصف البلوك
+bullOBMid = (bullOBHigh + bullOBLow) / 2.0
+bearOBMid = (bearOBHigh + bearOBLow) / 2.0
+
+// إلغاء OB عند اختراق المنتصف
+if bullOBValid and invalidateMid and close < bullOBMid
+    bullOBValid := false
+
+if bearOBValid and invalidateMid and close > bearOBMid
+    bearOBValid := false
+
+// إعادة اختبار البلوك
+bullOBRetest = bullOBValid and low <= bullOBHigh and high >= bullOBLow and close >= bullOBLow
+bearOBRetest = bearOBValid and high >= bearOBLow and low <= bearOBHigh and close <= bearOBHigh
+
+// عد اللمسات
+if bullOBRetest and not bullOBRetest[1]
+    bullTouches += 1
+
+if bearOBRetest and not bearOBRetest[1]
+    bearTouches += 1
+
+touchLongOk  = bullTouches <= maxTouches
+touchShortOk = bearTouches <= maxTouches
+
+//====================================================
+// Fibonacci Filter
+//====================================================
+
+rangeSwing = not na(lastSwingHigh) and not na(lastSwingLow) ? math.abs(lastSwingHigh - lastSwingLow) : na
+
+longFibRatio  = not na(rangeSwing) and rangeSwing > 0 and not na(bullOBMid) ? (lastSwingHigh - bullOBMid) / rangeSwing : na
+shortFibRatio = not na(rangeSwing) and rangeSwing > 0 and not na(bearOBMid) ? (bearOBMid - lastSwingLow) / rangeSwing : na
+
+fibLongOk  = not useFibFilter or (not na(longFibRatio) and longFibRatio >= fibMin and longFibRatio <= fibMax)
+fibShortOk = not useFibFilter or (not na(shortFibRatio) and shortFibRatio >= fibMin and shortFibRatio <= fibMax)
+
+//====================================================
+// Psychological Price Filter
+//====================================================
+
+psychLongOk  = not usePsychFilter or isPsychLevel(bullOBMid)
+psychShortOk = not usePsychFilter or isPsychLevel(bearOBMid)
+
+//====================================================
+// 6. Entry Conditions
+//====================================================
+
+longCondition = (
+     confirmedOk and
+     tradeLong and
+     strategy.position_size == 0 and
+     inValidationRange and
+     sessionOk and
+     biasLongOk and
+     bullOBRetest and
+     touchLongOk and
+     liquidityLongOk and
+     fvgLongOk and
+     fibLongOk and
+     psychLongOk)
+
+shortCondition = (
+     confirmedOk and
+     tradeShort and
+     strategy.position_size == 0 and
+     inValidationRange and
+     sessionOk and
+     biasShortOk and
+     bearOBRetest and
+     touchShortOk and
+     liquidityShortOk and
+     fvgShortOk and
+     fibShortOk and
+     psychShortOk)
+
+//====================================================
+// 7. Risk Management
+//====================================================
+
+longSL  = bullOBLow - buffer
+shortSL = bearOBHigh + buffer
+
+longRisk  = close - longSL
+shortRisk = shortSL - close
+
+longTP  = useFixedTP ? close + fixedTPPips * pipSize : close + longRisk * rrRatio
+shortTP = useFixedTP ? close - fixedTPPips * pipSize : close - shortRisk * rrRatio
+
+validLongRisk  = longRisk > syminfo.mintick
+validShortRisk = shortRisk > syminfo.mintick
+
+//====================================================
+// 8. Strategy Orders
+//====================================================
+
+if longCondition and validLongRisk
+    strategy.entry(id="شراء ICT", direction=strategy.long, qty=contractsQty)
+    strategy.exit(id="خروج شراء ICT", from_entry="شراء ICT", stop=longSL, limit=longTP)
+
+if shortCondition and validShortRisk
+    strategy.entry(id="بيع ICT", direction=strategy.short, qty=contractsQty)
+    strategy.exit(id="خروج بيع ICT", from_entry="بيع ICT", stop=shortSL, limit=shortTP)
+
+//====================================================
+// 9. Plots and Visuals
+//====================================================
+
+// BOS / CHoCH labels
+if showBOSLabels and bullBOS
+    label.new(
+         bar_index,
+         low,
+         bullCHoCH ? "CHoCH صاعد" : "BOS صاعد",
+         style=label.style_label_up,
+         color=bullCHoCH ? color.new(color.aqua, 0) : color.new(color.green, 0),
+         textcolor=color.white)
+
+if showBOSLabels and bearBOS
+    label.new(
+         bar_index,
+         high,
+         bearCHoCH ? "CHoCH هابط" : "BOS هابط",
+         style=label.style_label_down,
+         color=bearCHoCH ? color.new(color.orange, 0) : color.new(color.red, 0),
+         textcolor=color.white)
+
+// Liquidity sweep labels
+plotshape(
+     showLiquidity and bullLiquiditySweep,
+     title="ضرب سيولة شرائي",
+     style=shape.triangleup,
+     location=location.belowbar,
+     color=color.new(color.green, 0),
+     size=size.tiny,
+     text="Sweep")
+
+plotshape(
+     showLiquidity and bearLiquiditySweep,
+     title="ضرب سيولة بيعي",
+     style=shape.triangledown,
+     location=location.abovebar,
+     color=color.new(color.red, 0),
+     size=size.tiny,
+     text="Sweep")
+
+// Entry signals
+plotshape(
+     longCondition,
+     title="إشارة شراء",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.new(color.green, 0),
+     textcolor=color.white,
+     text="شراء")
+
+plotshape(
+     shortCondition,
+     title="إشارة بيع",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.new(color.red, 0),
+     textcolor=color.white,
+     text="بيع")
+
+// Session background
+bgcolor(showSessions and isLondon ? color.new(color.blue, 90) : na, title="تظليل لندن")
+bgcolor(showSessions and isNY ? color.new(color.purple, 90) : na, title="تظليل نيويورك")
+
+// Plot last liquidity levels
+plot(showLiquidity ? liqHigh : na, title="منطقة سيولة علوية", color=color.new(color.red, 65), style=plot.style_linebr)
+plot(showLiquidity ? liqLow : na, title="منطقة سيولة سفلية", color=color.new(color.green, 65), style=plot.style_linebr)
+
+// Alerts
+alertcondition(longCondition, title="تنبيه شراء ICT", message="إشارة شراء ICT: إعادة اختبار Order Block مع فلاتر الاستراتيجية")
+alertcondition(shortCondition, title="تنبيه بيع ICT", message="إشارة بيع ICT: إعادة اختبار Order Block مع فلاتر الاستراتيجية")

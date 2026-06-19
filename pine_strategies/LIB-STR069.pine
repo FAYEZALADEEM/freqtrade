@@ -1,0 +1,125 @@
+//@version=6
+strategy("LIB-STR069 - Goldbach PO3 PDF-only update", overlay=true, pyramiding=0)
+
+// PDF-only update / تحديث من ملفات PDF فقط:
+// Source:
+// - 978551577-Forex-Trading-Strategy-Goldbach-PO3-Google-Docs.pdf
+//
+// Confirmed source text:
+// - PO3 fixed dealing range: Range Low = floor(Current Price / PO3 Number) * PO3 Number.
+// - Goldbach Time: Hour + Minute must match the valid set.
+// - Setup A short: wick through 97%, close below 97%, sell, SL 103% or above wick, TP 83/59/11.
+// - Setup B short: sell limit/retest at 41%, SL above 47%, targets 29 and 17.
+// - Setup C short: sell at 83%, SL above 89%, target 11; Twin Tower confirmation remains discretionary.
+//
+// Bollinger Bands removed from executable logic:
+// [يتطلب مراجعة: PDF page 4 compares PO3 against Bollinger/ATR but gives no Bollinger rule.]
+// Tesla Vortex not coded:
+// [يتطلب مراجعة: PDF page 14 says the exact mathematical formula is proprietary/complex.]
+// Long setups disabled:
+// [يتطلب مراجعة: PDF gives Buy Program/examples but no complete long playbook with Entry/SL/TP.]
+
+enableShort = input.bool(true, "تفعيل صفقات البيع", group="1. إعدادات التشغيل", tooltip="يسمح بتفعيل إعدادات البيع الموثقة في PDF فقط؛ الشراء غير مفعل لعدم وجود Playbook كامل.")
+minBarsBetweenSignals = input.int(3, "أقل عدد شموع بين الإشارات", minval=0, group="1. إعدادات التشغيل", tooltip="يمنع تكرار إشارات Goldbach بسرعة؛ القيمة 0 تعني عدم فرض فاصل زمني.")
+enableSetupA = input.bool(true, "تفعيل Setup A - Golden Bullet", group="2. إعدادات البيع الموثقة", tooltip="يفعل بيع 97% عند Goldbach Time مع إغلاق أسفل 97% حسب PDF صفحة 16.")
+enableSetupB = input.bool(true, "تفعيل Setup B - Void Run", group="2. إعدادات البيع الموثقة", tooltip="يفعل بيع إعادة اختبار 41% بعد كسره، مع وقف أعلى 47% وأهداف 29% و17%.")
+enableSetupC = input.bool(false, "تفعيل Setup C - Algo2 [يتطلب مراجعة]", group="2. إعدادات البيع الموثقة", tooltip="يفعل بيع 83%، لكن Twin Tower تأكيد بصري غير مكتمل برمجيًا لذلك الإعداد مغلق افتراضيًا.")
+
+po3Size = input.float(0.0081, "حجم نطاق PO3 بوحدة السعر [يتطلب مراجعة]", minval=0.00000001, group="3. نطاق PO3 والمستويات", tooltip="حجم نطاق PO3 المستخدم لحساب 0% إلى 100%. غيّره حسب رمز التداول؛ PDF يذكر 81/243 كمفهوم نطاق.")
+
+useSetupAThirdTarget = input.bool(false, "تفعيل هدف Setup A الثالث عند 11% [يتطلب مراجعة]", group="4. إدارة الأهداف", tooltip="يفعل TP3 عند 11% فقط عند اعتبار Algo2 نشطًا؛ PDF ربطه بشرط Algo2 لذلك يبقى مغلقًا افتراضيًا.")
+
+f_level(rangeLow, pct) =>
+    rangeLow + po3Size * pct / 100.0
+
+rangeLow = math.floor(close / po3Size) * po3Size
+rangeHigh = rangeLow + po3Size
+
+level11 = f_level(rangeLow, 11)
+level17 = f_level(rangeLow, 17)
+level29 = f_level(rangeLow, 29)
+level41 = f_level(rangeLow, 41)
+level47 = f_level(rangeLow, 47)
+level59 = f_level(rangeLow, 59)
+level83 = f_level(rangeLow, 83)
+level89 = f_level(rangeLow, 89)
+level97 = f_level(rangeLow, 97)
+level103 = f_level(rangeLow, 103)
+
+goldbachValue = hour(time) + minute(time)
+validGoldbachTime = goldbachValue == 3 or goldbachValue == 11 or goldbachValue == 17 or goldbachValue == 23 or goldbachValue == 29 or goldbachValue == 35 or goldbachValue == 41 or goldbachValue == 47 or goldbachValue == 53 or goldbachValue == 59 or goldbachValue == 65 or goldbachValue == 71 or goldbachValue == 77 or goldbachValue == 83 or goldbachValue == 89 or goldbachValue == 97
+
+// PDF page 16: wick through 97 and close below 97 at Goldbach Time.
+setupAShort = enableShort and enableSetupA and validGoldbachTime and high > level97 and close < level97
+
+// PDF page 16: break 41 down, retest/sell at 41, stop above 47, targets 29 and 17.
+setupBShort = enableShort and enableSetupB and close[1] < level41[1] and high >= level41 and close < level41
+
+// PDF page 17: sell at 83 with Twin Tower confirmation.
+// [يتطلب مراجعة: Twin Tower double-top is visual; this uses only a same-bar rejection at 83.]
+setupCShort = enableShort and enableSetupC and high >= level83 and close < level83
+
+var int lastShortSignalBar = na
+allowShortSpacing = na(lastShortSignalBar) or bar_index - lastShortSignalBar >= minBarsBetweenSignals
+shortSignal = (setupAShort or setupBShort or setupCShort) and allowShortSpacing and strategy.position_size == 0
+
+var float shortStop = na
+var float shortTp1 = na
+var float shortTp2 = na
+var float shortTp3 = na
+
+if shortSignal
+    if setupAShort
+        shortStop := level103
+        shortTp1 := level83
+        shortTp2 := level59
+        shortTp3 := useSetupAThirdTarget ? level11 : na
+    else if setupBShort
+        shortStop := level47
+        shortTp1 := level29
+        shortTp2 := level17
+        shortTp3 := na
+    else
+        shortStop := level89
+        shortTp1 := level11
+        shortTp2 := na
+        shortTp3 := na
+    strategy.entry("Short", strategy.short)
+    lastShortSignalBar := bar_index
+
+if strategy.position_size < 0 and not na(shortStop)
+    if not na(shortTp3)
+        strategy.exit("S-TP1", "Short", stop=shortStop, limit=shortTp1, qty_percent=33)
+        strategy.exit("S-TP2", "Short", stop=shortStop, limit=shortTp2, qty_percent=33)
+        strategy.exit("S-TP3", "Short", stop=shortStop, limit=shortTp3, qty_percent=34)
+    else if not na(shortTp2)
+        strategy.exit("S-TP1", "Short", stop=shortStop, limit=shortTp1, qty_percent=50)
+        strategy.exit("S-TP2", "Short", stop=shortStop, limit=shortTp2, qty_percent=50)
+    else
+        strategy.exit("S-TP", "Short", stop=shortStop, limit=shortTp1)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    shortStop := na
+    shortTp1 := na
+    shortTp2 := na
+    shortTp3 := na
+
+plot(rangeLow, "PO3 0", color=color.new(color.gray, 55), style=plot.style_linebr)
+plot(rangeHigh, "PO3 100", color=color.new(color.gray, 55), style=plot.style_linebr)
+plot(level97, "97 Rejection Block", color=color.new(color.red, 25), style=plot.style_linebr)
+plot(level89, "89 Premium OB", color=color.new(color.orange, 30), style=plot.style_linebr)
+plot(level83, "83 Premium FVG", color=color.new(color.yellow, 35), style=plot.style_linebr)
+plot(level59, "59 Breaker", color=color.new(color.blue, 45), style=plot.style_linebr)
+plot(level47, "47 Mitigation", color=color.new(color.purple, 45), style=plot.style_linebr)
+plot(level41, "41 Breaker", color=color.new(color.blue, 45), style=plot.style_linebr)
+plot(level29, "29 Liquidity Void", color=color.new(color.teal, 35), style=plot.style_linebr)
+plot(level17, "17 Discount FVG", color=color.new(color.green, 35), style=plot.style_linebr)
+plot(level11, "11 Discount OB", color=color.new(color.lime, 30), style=plot.style_linebr)
+
+plotshape(setupAShort and allowShortSpacing, title="Setup A Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="A")
+plotshape(setupBShort and allowShortSpacing, title="Setup B Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.orange, 0), size=size.tiny, text="B")
+plotshape(setupCShort and allowShortSpacing, title="Setup C Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.purple, 0), size=size.tiny, text="C")
+
+alertcondition(setupAShort and allowShortSpacing, title="LIB-STR069 Setup A Short", message="Goldbach PO3 Setup A short")
+alertcondition(setupBShort and allowShortSpacing, title="LIB-STR069 Setup B Short", message="Goldbach PO3 Setup B short")
+alertcondition(setupCShort and allowShortSpacing, title="LIB-STR069 Setup C Short", message="Goldbach PO3 Setup C short")

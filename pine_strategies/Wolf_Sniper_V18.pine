@@ -1,0 +1,1090 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════════
+// 🐺 Wolf System Sniper V18 — Multi-Zone Engine
+//
+// التغييرات الجوهرية مقابل V17.4:
+//   1) تخزين مناطق متعدد (UDT + array<Zone>) بدلًا من 6 سلوتات
+//   2) closeBasedExit صار false افتراضيًا مع حماية ATR إضافية
+//   3) وضع Limit حقيقي (limit order at entry) — بديل عن السوقي عند الإغلاق
+//   4) Fresh Touch — يمنع الدخول الفوري إذا كان السعر داخل المنطقة عند تسجيلها
+//   5) didNotBreakStop يعتمد على الإغلاق فقط (يسمح بـ Liquidity Grabs)
+//   6) عمر منفصل لكل فريم (W / D / H4)
+//   7) coolDownBars الافتراضي 5
+//   8) حذف فعلي لخطوط الصفقة بعد الإغلاق
+// ═══════════════════════════════════════════════════════════════════════════════
+
+strategy(
+     title                   = "Wolf System Sniper V18 Multi-Zone | الذئب القناصة",
+     shorttitle              = "Wolf Sniper V18",
+     overlay                 = true,
+     initial_capital         = 10000,
+     currency                = currency.USD,
+     pyramiding              = 0,
+     commission_type         = strategy.commission.percent,
+     commission_value        = 0.0,
+     margin_long             = 5,
+     margin_short            = 5,
+     process_orders_on_close = true,
+     calc_on_order_fills     = true,
+     use_bar_magnifier       = true,
+     max_boxes_count         = 500,
+     max_lines_count         = 500,
+     max_labels_count        = 500
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 مجموعات الإعدادات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const string G_HTF   = "1) مناطق الفريمات الكبيرة"
+const string G_BIAS  = "2) فلتر الاتجاه"
+const string G_ENTRY = "3) تنفيذ الدخول"
+const string G_RISK  = "4) المخاطرة والخروج"
+const string G_VIEW  = "5) الألوان والعرض"
+const string G_PANEL = "6) لوحة المعلومات"
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 الإعدادات — مناطق HTF
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool useWeeklyZones = input.bool(true, "تفعيل مناطق الأسبوعي", group = G_HTF)
+bool useDailyZones  = input.bool(true, "تفعيل مناطق اليومي", group = G_HTF)
+bool useH4Zones     = input.bool(true, "تفعيل مناطق 4 ساعات", group = G_HTF)
+
+int maxZonesPerType = input.int(8, "أقصى عدد مناطق محفوظة لكل نوع", minval = 2, maxval = 30, group = G_HTF)
+
+int htfAtrLength     = input.int(14, "ATR للفريمات الكبيرة", minval = 1, group = G_HTF)
+int htfBaseSearch    = input.int(12, "البحث عن شمعة القاعدة", minval = 1, maxval = 40, group = G_HTF)
+float htfMinBodyATR  = input.float(0.20, "أقل جسم اندفاع من ATR", minval = 0.05, step = 0.05, group = G_HTF)
+float htfMinBodyFill = input.float(0.35, "أقل امتلاء شمعة الاندفاع", minval = 0.10, maxval = 1.00, step = 0.05, group = G_HTF)
+bool htfBreakByClose = input.bool(false, "اشتراط الكسر بإغلاق HTF", group = G_HTF)
+bool keepOldBoxes    = input.bool(true, "إبقاء صناديق المناطق القديمة", group = G_HTF)
+
+// أعمار منفصلة حسب الفريم — قياسًا بشموع فريم التنفيذ
+int wMaxAgeBars = input.int(20000, "أقصى عمر منطقة أسبوعية", minval = 100, maxval = 100000, group = G_HTF)
+int dMaxAgeBars = input.int(6000,  "أقصى عمر منطقة يومية",  minval = 50,  maxval = 50000,  group = G_HTF)
+int hMaxAgeBars = input.int(1500,  "أقصى عمر منطقة 4 ساعات", minval = 20,  maxval = 20000,  group = G_HTF)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 فلتر BOS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string biasMode = input.string(
+     "بدون فلتر — المنطقة هي الأساس",
+     "فلتر الاتجاه",
+     options = [
+         "بدون فلتر — المنطقة هي الأساس",
+         "توافق اتجاه فريم المنطقة",
+         "توافق اليومي و4 ساعات",
+         "توافق الأسبوعي واليومي و4 ساعات"
+     ],
+     group = G_BIAS
+)
+
+int bosLeft  = input.int(2, "Pivot يسار", minval = 1, maxval = 10, group = G_BIAS)
+int bosRight = input.int(2, "Pivot يمين", minval = 1, maxval = 10, group = G_BIAS)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 تنفيذ الدخول
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+string executionMode = input.string(
+     "أمر Limit عند خط Entry",
+     "طريقة التنفيذ",
+     options = [
+         "أمر Limit عند خط Entry",
+         "سوقي بإغلاق شمعة لمس Entry",
+         "سوقي بإغلاق شمعة دخول المنطقة"
+     ],
+     group = G_ENTRY,
+     tooltip = "Limit = أمر حقيقي عند سعر Entry. السوقي = دخول فوري بإغلاق الشمعة (قد يكون السعر أسوأ)."
+)
+
+bool requireFreshTouch = input.bool(true, "اشتراط لمس طازج (السعر يأتي من خارج المنطقة)", group = G_ENTRY,
+     tooltip = "يمنع الدخول إذا كان السعر أصلًا داخل المنطقة عند تسجيلها.")
+
+bool invalidateBeforeEntry = input.bool(true, "إلغاء المنطقة عند كسر الوقف قبل الدخول", group = G_ENTRY)
+int  limitOrderLifeBars    = input.int(200, "صلاحية أمر Limit بالشموع", minval = 5, maxval = 2000, group = G_ENTRY)
+int  coolDownBars          = input.int(5, "شموع انتظار بعد إغلاق الصفقة", minval = 0, maxval = 200, group = G_ENTRY)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 المخاطرة والخروج
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool useRiskSizing  = input.bool(false, "الحجم بنسبة مخاطرة من الحساب", group = G_RISK)
+float riskPercent   = input.float(1.0, "نسبة المخاطرة %", minval = 0.01, maxval = 10.0, step = 0.10, group = G_RISK)
+float fixedQuantity = input.float(1000, "الحجم الثابت", minval = 1, step = 1, group = G_RISK)
+
+bool enableTarget    = input.bool(true, "تفعيل الهدف", group = G_RISK)
+float targetRR       = input.float(2.0, "الهدف R", minval = 0.25, step = 0.25, group = G_RISK)
+bool enableBreakEven = input.bool(true, "تفعيل Break-Even", group = G_RISK)
+float breakEvenAtR   = input.float(1.0, "نقل الوقف عند R", minval = 0.25, step = 0.25, group = G_RISK)
+
+bool closeBasedExit  = input.bool(false, "الخروج بإغلاق الشمعة فقط (خطر)", group = G_RISK,
+     tooltip = "إن كان true: الوقف لا ينفّذ إلا بإغلاق تحت/فوق المستوى. الفتيلات لا تُخرج. هذا يسمح بخسائر أكبر بكثير من R. الافتراضي false.")
+
+bool useATRMaxLoss   = input.bool(true, "حماية إضافية: خروج فوري عند خسارة > N × R", group = G_RISK)
+float maxLossR       = input.float(1.50, "حد الخسارة كمضاعف لـ R", minval = 1.00, maxval = 5.00, step = 0.10, group = G_RISK)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🎨 الألوان والعرض
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool paintBackground = input.bool(true, "تلوين خلفية الرسم", group = G_VIEW)
+bool showZoneBoxes   = input.bool(true, "إظهار مناطق HTF", group = G_VIEW)
+bool showTradeLines  = input.bool(true, "إظهار خطوط الصفقة", group = G_VIEW)
+bool showLabels      = input.bool(true, "إظهار الملصقات", group = G_VIEW)
+bool colorTradeBars  = input.bool(false, "تلوين الشموع أثناء الصفقة", group = G_VIEW)
+
+color idleBackground  = input.color(color.rgb(16, 34, 57), "خلفية الانتظار", group = G_VIEW)
+color longBackground  = input.color(color.rgb(21, 78, 69), "خلفية الشراء", group = G_VIEW)
+color shortBackground = input.color(color.rgb(82, 40, 57), "خلفية البيع", group = G_VIEW)
+
+color weeklySupply = input.color(color.rgb(232, 86, 101), "عرض أسبوعي", group = G_VIEW)
+color weeklyDemand = input.color(color.rgb(29, 174, 122), "طلب أسبوعي", group = G_VIEW)
+color dailySupply  = input.color(color.rgb(175, 106, 228), "عرض يومي", group = G_VIEW)
+color dailyDemand  = input.color(color.rgb(28, 185, 184), "طلب يومي", group = G_VIEW)
+color h4Supply     = input.color(color.rgb(243, 157, 61), "عرض 4 ساعات", group = G_VIEW)
+color h4Demand     = input.color(color.rgb(126, 203, 94), "طلب 4 ساعات", group = G_VIEW)
+
+color entryColor    = input.color(color.rgb(255, 211, 70), "خط الدخول", group = G_VIEW)
+color stopColor     = input.color(color.rgb(255, 100, 112), "خط الوقف", group = G_VIEW)
+color targetColor   = input.color(color.rgb(75, 202, 242), "خط الهدف", group = G_VIEW)
+color usedZoneColor = input.color(color.rgb(112, 136, 157), "المنطقة المستهلكة", group = G_VIEW)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 لوحة المعلومات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool showDashboard = input.bool(true, "إظهار لوحة المعلومات", group = G_PANEL)
+color panelBg     = input.color(color.rgb(27, 50, 73), "خلفية اللوحة", group = G_PANEL)
+color panelCell   = input.color(color.rgb(35, 63, 88), "خلفية الخلايا", group = G_PANEL)
+color panelHeader = input.color(color.rgb(43, 94, 163), "رأس اللوحة", group = G_PANEL)
+color panelBorder = input.color(color.rgb(112, 151, 187), "إطار اللوحة", group = G_PANEL)
+
+color textMain  = color.rgb(242, 247, 252)
+color textMuted = color.rgb(185, 206, 221)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 ثوابت أنواع المناطق
+// 0 عرض أسبوعي | 1 طلب أسبوعي | 2 عرض يومي | 3 طلب يومي | 4 عرض H4 | 5 طلب H4
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const int W_SUPPLY = 0
+const int W_DEMAND = 1
+const int D_SUPPLY = 2
+const int D_DEMAND = 3
+const int H_SUPPLY = 4
+const int H_DEMAND = 5
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 UDT للمنطقة — تخزين متعدد المناطق
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+type Zone
+    int   zoneType
+    float top
+    float bottom
+    float entryPrice
+    float stopPrice
+    int   originTime
+    int   readyBar
+    bool  used
+    bool  priceWasOutside   // لتأكيد اللمس الطازج
+    box   visualBox
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 مخزون المناطق
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var array<Zone> zones = array.new<Zone>()
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 العدادات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var int weeklyZonesCount  = 0
+var int dailyZonesCount   = 0
+var int h4ZonesCount      = 0
+var int usedZonesCount    = 0
+var int invalidZonesCount = 0
+var int signalCount       = 0
+var int filledCount       = 0
+var int cancelledOrders   = 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 بيانات الصفقة الحالية
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var int   tradeDirection = 0
+var int   tradeZoneType  = na
+var float zoneEntryPrice = na
+var float actualEntry    = na
+var float tradeStop      = na
+var float activeStop     = na
+var float tradeTarget    = na
+var float tradeRisk      = na
+var bool  movedToBE      = false
+var string tradeSource   = "—"
+var int   tradeStrength  = 0
+var int   lastExitBar    = na
+
+// أمر Limit المعلّق
+var bool   pendingActive    = false
+var int    pendingDirection = 0
+var float  pendingEntry     = na
+var float  pendingStop      = na
+var int    pendingPlacedBar = na
+var int    pendingZoneIdx   = na   // فهرس داخل array<Zone>
+
+// عناصر بصرية للصفقة
+var box  riskBox     = na
+var line entryLine   = na
+var line stopLine    = na
+var line targetLine  = na
+
+// أحداث للتنبيهات
+bool entrySignalEvent = false
+bool longFillEvent    = false
+bool shortFillEvent   = false
+bool orderCancelEvent = false
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 دوال مساعدة
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_price(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+f_dirOfType(int t) =>
+    t % 2 == 0 ? -1 : 1
+
+f_zoneName(int t) =>
+    t == W_SUPPLY ? "عرض أسبوعي" :
+     t == W_DEMAND ? "طلب أسبوعي" :
+     t == D_SUPPLY ? "عرض يومي" :
+     t == D_DEMAND ? "طلب يومي" :
+     t == H_SUPPLY ? "عرض 4 ساعات" :
+     t == H_DEMAND ? "طلب 4 ساعات" : "—"
+
+f_zoneColor(int t) =>
+    t == W_SUPPLY ? weeklySupply :
+     t == W_DEMAND ? weeklyDemand :
+     t == D_SUPPLY ? dailySupply :
+     t == D_DEMAND ? dailyDemand :
+     t == H_SUPPLY ? h4Supply : h4Demand
+
+f_typeEnabled(int t) =>
+    t <= 1 ? useWeeklyZones : t <= 3 ? useDailyZones : useH4Zones
+
+f_typeWeight(int t) =>
+    t <= 1 ? 30 : t <= 3 ? 20 : 10
+
+f_typeMaxAge(int t) =>
+    t <= 1 ? wMaxAgeBars : t <= 3 ? dMaxAgeBars : hMaxAgeBars
+
+f_directionText(int d) =>
+    d == 1 ? "شراء" : d == -1 ? "بيع" : "—"
+
+f_biasText(int b) =>
+    b == 1 ? "صاعد / شراء" : b == -1 ? "هابط / بيع" : "محايد"
+
+f_biasColor(int b) =>
+    b == 1 ? weeklyDemand : b == -1 ? weeklySupply : textMuted
+
+f_positionSize(float entryPrice, float stopPrice) =>
+    float distance = math.abs(entryPrice - stopPrice)
+    float cashRisk = strategy.equity * riskPercent / 100.0
+    float unitRisk = distance * syminfo.pointvalue
+    float calculated = unitRisk > 0 ? cashRisk / unitRisk : 0.0
+    useRiskSizing ? calculated : fixedQuantity
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 رصد منطقة HTF — يعتمد [1] داخليًا (آمن مع lookahead_on)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_confirmedZone() =>
+    float atrValue = ta.atr(htfAtrLength)
+    float body = math.abs(close[1] - open[1])
+    float candleRange = high[1] - low[1]
+    float fillRatio = candleRange > 0 ? body / candleRange : 0.0
+
+    int bearishBase = na
+    int bullishBase = na
+
+    for i = 2 to htfBaseSearch + 1
+        if na(bearishBase) and close[i] < open[i]
+            bearishBase := i
+        if na(bullishBase) and close[i] > open[i]
+            bullishBase := i
+
+    bool strongBullish =
+         close[1] > open[1] and
+         not na(atrValue[1]) and
+         body >= atrValue[1] * htfMinBodyATR and
+         fillRatio >= htfMinBodyFill
+
+    bool strongBearish =
+         close[1] < open[1] and
+         not na(atrValue[1]) and
+         body >= atrValue[1] * htfMinBodyATR and
+         fillRatio >= htfMinBodyFill
+
+    bool demandBreak =
+         not na(bearishBase) and
+         (htfBreakByClose ? close[1] > high[bearishBase] : high[1] > high[bearishBase])
+
+    bool supplyBreak =
+         not na(bullishBase) and
+         (htfBreakByClose ? close[1] < low[bullishBase]  : low[1]  < low[bullishBase])
+
+    int direction =
+         strongBullish and demandBreak ? 1 :
+         strongBearish and supplyBreak ? -1 : 0
+
+    float detectedTop =
+         direction == 1  ? math.max(open[bearishBase], close[bearishBase]) :
+         direction == -1 ? high[bullishBase] : na
+
+    float detectedBottom =
+         direction == 1  ? low[bearishBase] :
+         direction == -1 ? math.min(open[bullishBase], close[bullishBase]) : na
+
+    float detectedEntry = detectedTop
+    detectedEntry := direction == 1 ? math.max(open[bearishBase], close[bearishBase]) :
+                     direction == -1 ? math.min(open[bullishBase], close[bullishBase]) : na
+
+    float detectedStop =
+         direction == 1  ? low[bearishBase] :
+         direction == -1 ? high[bullishBase] : na
+
+    int detectedOrigin =
+         direction == 1  ? time[bearishBase] :
+         direction == -1 ? time[bullishBase] : na
+
+    [direction, detectedTop, detectedBottom, detectedEntry, detectedStop, detectedOrigin]
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 BOS Bias — مع var لاستمرارية الاتجاه
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_biasRaw() =>
+    float pivotHigh = ta.pivothigh(high, bosLeft, bosRight)
+    float pivotLow  = ta.pivotlow(low, bosLeft, bosRight)
+
+    var float lastHigh = na
+    var float lastLow  = na
+    var int bias       = 0
+
+    if not na(pivotHigh)
+        lastHigh := pivotHigh
+    if not na(pivotLow)
+        lastLow := pivotLow
+
+    bool bullishBos = not na(lastHigh) and close > lastHigh and close[1] <= lastHigh
+    bool bearishBos = not na(lastLow)  and close < lastLow  and close[1] >= lastLow
+
+    if bullishBos
+        bias := 1
+    else if bearishBos
+        bias := -1
+
+    bias
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 جلب بيانات W / D / H4
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[wDir, wTop, wBottom, wEntry, wStop, wOrigin] = request.security(
+     syminfo.tickerid, "W", f_confirmedZone(),
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+[dDir, dTop, dBottom, dEntry, dStop, dOrigin] = request.security(
+     syminfo.tickerid, "D", f_confirmedZone(),
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+[hDir, hTop, hBottom, hEntry, hStop, hOrigin] = request.security(
+     syminfo.tickerid, "240", f_confirmedZone(),
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+int weeklyBias = request.security(syminfo.tickerid, "W", f_biasRaw()[1],
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+int dailyBias  = request.security(syminfo.tickerid, "D", f_biasRaw()[1],
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+int h4Bias     = request.security(syminfo.tickerid, "240", f_biasRaw()[1],
+     gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_on)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إدارة المخزون: التحقق من عدم تكرار origin
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_originExists(int targetType, int originTime) =>
+    bool found = false
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if z.zoneType == targetType and z.originTime == originTime
+                found := true
+                break
+    found
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 عدّ المناطق غير المستهلكة لنوع معين
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_countActiveByType(int targetType) =>
+    int c = 0
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if z.zoneType == targetType and not z.used
+                c += 1
+    c
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إزالة أقدم منطقة من نوع معين عند تجاوز الحد
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_dropOldestOfType(int targetType) =>
+    int oldestIdx = na
+    int oldestBar = na
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if z.zoneType == targetType
+                if na(oldestBar) or z.readyBar < oldestBar
+                    oldestBar := z.readyBar
+                    oldestIdx := i
+    if not na(oldestIdx)
+        Zone removed = array.get(zones, oldestIdx)
+        if not na(removed.visualBox)
+            box.delete(removed.visualBox)
+        array.remove(zones, oldestIdx)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 تسجيل منطقة جديدة في المخزون
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_registerZone(int zType, float top, float bottom, float entry, float stop, int origin) =>
+    // فحص حد عدد المناطق لكل نوع
+    while f_countActiveByType(zType) >= maxZonesPerType
+        f_dropOldestOfType(zType)
+
+    color selectedColor = f_zoneColor(zType)
+    box createdBox = na
+
+    if showZoneBoxes
+        createdBox := box.new(
+             left = origin, top = top, right = time, bottom = bottom,
+             xloc = xloc.bar_time, extend = extend.right,
+             border_color = selectedColor, border_width = 2,
+             bgcolor = color.new(selectedColor, 84),
+             text = f_zoneName(zType), text_color = selectedColor, text_size = size.tiny)
+
+    // تحديد إذا كان السعر الحالي خارج المنطقة عند التسجيل
+    int direction = f_dirOfType(zType)
+    bool outsideAtBirth = direction == 1 ? close > top : close < bottom
+
+    Zone newZone = Zone.new(
+         zoneType = zType,
+         top = top, bottom = bottom,
+         entryPrice = entry, stopPrice = stop,
+         originTime = origin, readyBar = bar_index,
+         used = false,
+         priceWasOutside = outsideAtBirth,
+         visualBox = createdBox)
+
+    array.push(zones, newZone)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 جعل منطقة مستهلكة (بصريًا ومنطقيًا)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_markUsed(int idx) =>
+    Zone z = array.get(zones, idx)
+    z.used := true
+
+    if not na(z.visualBox)
+        if keepOldBoxes
+            box.set_extend(z.visualBox, extend.none)
+            box.set_right(z.visualBox, time)
+            box.set_bgcolor(z.visualBox, color.new(usedZoneColor, 91))
+            box.set_border_color(z.visualBox, color.new(usedZoneColor, 55))
+        else
+            box.delete(z.visualBox)
+            z.visualBox := na
+
+    array.set(zones, idx, z)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 حساب التداخل لمنطقة (نفس الاتجاه فقط)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_confluence(int mainIdx) =>
+    int count = 0
+    if array.size(zones) > 0
+        Zone main = array.get(zones, mainIdx)
+        int mainDir = f_dirOfType(main.zoneType)
+        for i = 0 to array.size(zones) - 1
+            if i != mainIdx
+                Zone z = array.get(zones, i)
+                if not z.used and f_dirOfType(z.zoneType) == mainDir
+                    if math.max(main.bottom, z.bottom) <= math.min(main.top, z.top)
+                        count += 1
+    count
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 استهلاك كل المناطق المتداخلة مع منطقة معينة
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_consumeOverlap(int mainIdx) =>
+    int consumed = 0
+    if array.size(zones) > 0
+        Zone main = array.get(zones, mainIdx)
+        int mainDir = f_dirOfType(main.zoneType)
+        // أولًا استهلك المنطقة الأصلية
+        if not main.used
+            f_markUsed(mainIdx)
+            consumed += 1
+        // ثم الباقي المتداخل
+        for i = 0 to array.size(zones) - 1
+            if i != mainIdx
+                Zone z = array.get(zones, i)
+                if not z.used and f_dirOfType(z.zoneType) == mainDir
+                    if math.max(main.bottom, z.bottom) <= math.min(main.top, z.top)
+                        f_markUsed(i)
+                        consumed += 1
+    consumed
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 تسجيل المناطق الجديدة (W / D / H4) — مرة واحدة لكل origin
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.isconfirmed and useWeeklyZones and wDir != 0 and not na(wOrigin)
+    int zt = wDir == -1 ? W_SUPPLY : W_DEMAND
+    if not f_originExists(zt, wOrigin)
+        f_registerZone(zt, wTop, wBottom, wEntry, wStop, wOrigin)
+        weeklyZonesCount += 1
+
+if barstate.isconfirmed and useDailyZones and dDir != 0 and not na(dOrigin)
+    int zt = dDir == -1 ? D_SUPPLY : D_DEMAND
+    if not f_originExists(zt, dOrigin)
+        f_registerZone(zt, dTop, dBottom, dEntry, dStop, dOrigin)
+        dailyZonesCount += 1
+
+if barstate.isconfirmed and useH4Zones and hDir != 0 and not na(hOrigin)
+    int zt = hDir == -1 ? H_SUPPLY : H_DEMAND
+    if not f_originExists(zt, hOrigin)
+        f_registerZone(zt, hTop, hBottom, hEntry, hStop, hOrigin)
+        h4ZonesCount += 1
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 تحديث حالة "السعر خارج المنطقة" لتفعيل Fresh Touch
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.isconfirmed and array.size(zones) > 0
+    for i = 0 to array.size(zones) - 1
+        Zone z = array.get(zones, i)
+        if not z.used and not z.priceWasOutside
+            int dir = f_dirOfType(z.zoneType)
+            bool nowOutside = dir == 1 ? close > z.top : close < z.bottom
+            if nowOutside
+                z.priceWasOutside := true
+                array.set(zones, i, z)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إلغاء المناطق المكسورة قبل الدخول
+// (يعتمد على الإغلاق فقط — يسمح بالـ Liquidity Grabs)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool flat = strategy.position_size == 0
+bool cooledDown = na(lastExitBar) or bar_index - lastExitBar > coolDownBars
+
+if barstate.isconfirmed and flat and not pendingActive and invalidateBeforeEntry and array.size(zones) > 0
+    int killed = 0
+    for i = 0 to array.size(zones) - 1
+        Zone z = array.get(zones, i)
+        if not z.used and bar_index > z.readyBar
+            int dir = f_dirOfType(z.zoneType)
+            bool brokenByClose = dir == 1 ? close < z.stopPrice : close > z.stopPrice
+            if brokenByClose
+                f_markUsed(i)
+                killed += 1
+    invalidZonesCount += killed
+    usedZonesCount += killed
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 فلتر BOS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_biasAllowed(int direction, int zType) =>
+    int sourceBias = zType <= 1 ? weeklyBias : zType <= 3 ? dailyBias : h4Bias
+    bool allowed = true
+    if biasMode == "توافق اتجاه فريم المنطقة"
+        allowed := sourceBias == direction
+    else if biasMode == "توافق اليومي و4 ساعات"
+        allowed := dailyBias == direction and h4Bias == direction
+    else if biasMode == "توافق الأسبوعي واليومي و4 ساعات"
+        allowed := weeklyBias == direction and dailyBias == direction and h4Bias == direction
+    allowed
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 اختيار أفضل منطقة قابلة للدخول
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+int selectedIdx = na
+int selectedDir = 0
+int selectedStrength = 0
+int bestScore = -1
+
+if barstate.isconfirmed and flat and cooledDown and not pendingActive and array.size(zones) > 0
+    for i = 0 to array.size(zones) - 1
+        Zone z = array.get(zones, i)
+        if not z.used and f_typeEnabled(z.zoneType) and bar_index > z.readyBar
+            int age = bar_index - z.readyBar
+            int maxAge = f_typeMaxAge(z.zoneType)
+            if age <= maxAge
+                int dir = f_dirOfType(z.zoneType)
+
+                // فحص اللمس الطازج (السعر يأتي من خارج المنطقة)
+                bool freshOk = not requireFreshTouch or z.priceWasOutside
+
+                // شروط اللمس حسب وضع التنفيذ
+                bool touched = false
+                if executionMode == "أمر Limit عند خط Entry"
+                    // اللمس الطازج كافٍ — سنضع Limit أصلًا
+                    touched := dir == 1 ? (high >= z.entryPrice or close > z.entryPrice) : (low <= z.entryPrice or close < z.entryPrice)
+                else if executionMode == "سوقي بإغلاق شمعة لمس Entry"
+                    touched := dir == 1 ?
+                         (close[1] > z.entryPrice and low <= z.entryPrice) :
+                         (close[1] < z.entryPrice and high >= z.entryPrice)
+                else  // "سوقي بإغلاق شمعة دخول المنطقة"
+                    touched := high >= z.bottom and low <= z.top
+
+                // الوقف لم يُكسر بالإغلاق
+                bool stopSafe = dir == 1 ? close > z.stopPrice : close < z.stopPrice
+
+                bool biasOk = f_biasAllowed(dir, z.zoneType)
+
+                if freshOk and touched and stopSafe and biasOk
+                    int conf = f_confluence(i)
+                    int score = conf * 100 + f_typeWeight(z.zoneType)
+                    if score > bestScore
+                        bestScore := score
+                        selectedIdx := i
+                        selectedDir := dir
+                        selectedStrength := conf
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إنشاء صفقة عند توفر إعداد جاهز
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.isconfirmed and flat and cooledDown and not pendingActive and not na(selectedIdx)
+    Zone target = array.get(zones, selectedIdx)
+    float useEntry = executionMode == "أمر Limit عند خط Entry" ? target.entryPrice : close
+    float useStop  = target.stopPrice
+    float risk     = math.abs(useEntry - useStop)
+    float qty      = f_positionSize(useEntry, useStop)
+
+    if risk > syminfo.mintick and qty > 0
+        tradeDirection := selectedDir
+        tradeZoneType  := target.zoneType
+        zoneEntryPrice := target.entryPrice
+        tradeStop      := useStop
+        activeStop     := useStop
+        tradeSource    := f_zoneName(target.zoneType)
+        tradeStrength  := selectedStrength
+
+        signalCount      += 1
+        entrySignalEvent := true
+
+        if executionMode == "أمر Limit عند خط Entry"
+            // أمر Limit حقيقي
+            pendingActive    := true
+            pendingDirection := selectedDir
+            pendingEntry     := target.entryPrice
+            pendingStop      := useStop
+            pendingPlacedBar := bar_index
+            pendingZoneIdx   := selectedIdx
+
+            if selectedDir == 1
+                strategy.entry("WOLF-L", strategy.long, qty = qty, limit = target.entryPrice,
+                     comment = "Wolf Buy Limit")
+            else
+                strategy.entry("WOLF-S", strategy.short, qty = qty, limit = target.entryPrice,
+                     comment = "Wolf Sell Limit")
+        else
+            // أوامر سوقية فورية
+            if selectedDir == 1
+                strategy.entry("WOLF-L", strategy.long, qty = qty,
+                     comment = "Wolf Buy Market")
+            else
+                strategy.entry("WOLF-S", strategy.short, qty = qty,
+                     comment = "Wolf Sell Market")
+
+            // الأوامر السوقية تستهلك المنطقة فورًا
+            int consumed = f_consumeOverlap(selectedIdx)
+            usedZonesCount += consumed
+
+        // الرسم
+        if showTradeLines
+            riskBox := box.new(
+                 left = bar_index, top = math.max(useEntry, useStop),
+                 right = bar_index + 100, bottom = math.min(useEntry, useStop),
+                 xloc = xloc.bar_index,
+                 border_color = f_zoneColor(target.zoneType), border_width = 2,
+                 bgcolor = color.new(f_zoneColor(target.zoneType), 86))
+
+            entryLine := line.new(
+                 x1 = bar_index, y1 = useEntry,
+                 x2 = bar_index + 100, y2 = useEntry,
+                 xloc = xloc.bar_index, color = entryColor, width = 2)
+
+            stopLine := line.new(
+                 x1 = bar_index, y1 = useStop,
+                 x2 = bar_index + 100, y2 = useStop,
+                 xloc = xloc.bar_index, color = stopColor, width = 2, style = line.style_dashed)
+
+        if showLabels
+            string lbl = pendingActive ? "🐺 أمر Limit\n" : "🐺 إشارة سوق\n"
+            label.new(
+                 x = bar_index, y = selectedDir == 1 ? low : high,
+                 text = lbl + tradeSource +
+                        "\nEntry: " + f_price(useEntry) +
+                        "\nSL: " + f_price(useStop),
+                 style = selectedDir == 1 ? label.style_label_up : label.style_label_down,
+                 color = f_zoneColor(target.zoneType),
+                 textcolor = textMain, size = size.small)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إلغاء أمر Limit المعلّق
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.isconfirmed and pendingActive and flat
+    bool expired = bar_index - pendingPlacedBar > limitOrderLifeBars
+    bool stopBreakBeforeFill =
+         pendingDirection == 1 ? close < pendingStop : close > pendingStop
+
+    if expired or stopBreakBeforeFill
+        strategy.cancel_all()
+        pendingActive := false
+        cancelledOrders += 1
+        orderCancelEvent := true
+
+        // استهلك المنطقة (لا نعيدها للسوق)
+        if not na(pendingZoneIdx) and pendingZoneIdx < array.size(zones)
+            int consumed = f_consumeOverlap(pendingZoneIdx)
+            usedZonesCount += consumed
+
+        // إخفاء الرسومات
+        if not na(riskBox)
+            box.set_bgcolor(riskBox, color.new(usedZoneColor, 90))
+            box.set_border_color(riskBox, color.new(usedZoneColor, 45))
+        if not na(entryLine)
+            line.set_color(entryLine, usedZoneColor)
+        if not na(stopLine)
+            line.set_color(stopLine, usedZoneColor)
+
+        if showLabels
+            label.new(
+                 x = bar_index, y = close,
+                 text = expired ? "✖ انتهت صلاحية Limit" : "✖ كُسر الوقف قبل التنفيذ",
+                 style = label.style_label_left,
+                 color = usedZoneColor, textcolor = textMain, size = size.tiny)
+
+        pendingZoneIdx   := na
+        pendingDirection := 0
+        pendingEntry     := na
+        pendingStop      := na
+        pendingPlacedBar := na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 اكتشاف تفعيل الصفقة فعليًا
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool newLongPosition  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+bool newShortPosition = strategy.position_size < 0 and strategy.position_size[1] >= 0
+
+if newLongPosition
+    filledCount += 1
+    longFillEvent := true
+    pendingActive := false
+
+    // استهلك المنطقة عند التفعيل الفعلي
+    if not na(pendingZoneIdx) and pendingZoneIdx < array.size(zones)
+        int consumed = f_consumeOverlap(pendingZoneIdx)
+        usedZonesCount += consumed
+        pendingZoneIdx := na
+
+    actualEntry := strategy.position_avg_price
+    tradeRisk := actualEntry - tradeStop
+    activeStop := tradeStop
+    tradeTarget := actualEntry + tradeRisk * targetRR
+
+    if not na(entryLine)
+        line.set_y1(entryLine, actualEntry)
+        line.set_y2(entryLine, actualEntry)
+
+    if showTradeLines and enableTarget
+        targetLine := line.new(
+             x1 = bar_index, y1 = tradeTarget,
+             x2 = bar_index + 100, y2 = tradeTarget,
+             xloc = xloc.bar_index, color = targetColor, width = 2, style = line.style_dotted)
+
+    if showLabels
+        label.new(x = bar_index, y = low,
+             text = "✓ شراء منفذ\nEntry: " + f_price(actualEntry) + "\nTP: " + f_price(tradeTarget),
+             style = label.style_label_up,
+             color = weeklyDemand, textcolor = textMain, size = size.small)
+
+if newShortPosition
+    filledCount += 1
+    shortFillEvent := true
+    pendingActive := false
+
+    if not na(pendingZoneIdx) and pendingZoneIdx < array.size(zones)
+        int consumed = f_consumeOverlap(pendingZoneIdx)
+        usedZonesCount += consumed
+        pendingZoneIdx := na
+
+    actualEntry := strategy.position_avg_price
+    tradeRisk := tradeStop - actualEntry
+    activeStop := tradeStop
+    tradeTarget := actualEntry - tradeRisk * targetRR
+
+    if not na(entryLine)
+        line.set_y1(entryLine, actualEntry)
+        line.set_y2(entryLine, actualEntry)
+
+    if showTradeLines and enableTarget
+        targetLine := line.new(
+             x1 = bar_index, y1 = tradeTarget,
+             x2 = bar_index + 100, y2 = tradeTarget,
+             xloc = xloc.bar_index, color = targetColor, width = 2, style = line.style_dotted)
+
+    if showLabels
+        label.new(x = bar_index, y = high,
+             text = "✓ بيع منفذ\nEntry: " + f_price(actualEntry) + "\nTP: " + f_price(tradeTarget),
+             style = label.style_label_down,
+             color = weeklySupply, textcolor = textMain, size = size.small)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إدارة صفقة الشراء — مع حماية ATR
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.isconfirmed and strategy.position_size > 0 and not na(tradeRisk) and tradeRisk > syminfo.mintick
+    float breakEvenTrigger = actualEntry + tradeRisk * breakEvenAtR
+
+    if enableBreakEven and not movedToBE and close >= breakEvenTrigger
+        activeStop := actualEntry
+        movedToBE := true
+        if not na(stopLine)
+            line.set_y1(stopLine, activeStop)
+            line.set_y2(stopLine, activeStop)
+            line.set_color(stopLine, entryColor)
+        if showLabels
+            label.new(x = bar_index, y = low, text = "🔒 Break-Even",
+                 style = label.style_label_up, color = entryColor,
+                 textcolor = color.rgb(40, 50, 60), size = size.tiny)
+
+    bool stopHit = closeBasedExit ? close <= activeStop : low <= activeStop
+    bool targetHit = enableTarget and (closeBasedExit ? close >= tradeTarget : high >= tradeTarget)
+
+    // حماية ATR — وقف صلب عند خسارة فادحة حتى لو كان closeBasedExit مفعّلًا
+    float hardLossLevel = actualEntry - tradeRisk * maxLossR
+    bool hardLossHit = useATRMaxLoss and low <= hardLossLevel
+
+    if hardLossHit
+        strategy.close("WOLF-L", comment = "Buy HARD STOP")
+    else if stopHit
+        strategy.close("WOLF-L", comment = movedToBE ? "Buy BE" : "Buy SL")
+    else if targetHit
+        strategy.close("WOLF-L", comment = "Buy TP")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 إدارة صفقة البيع — مع حماية ATR
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if barstate.isconfirmed and strategy.position_size < 0 and not na(tradeRisk) and tradeRisk > syminfo.mintick
+    float breakEvenTrigger = actualEntry - tradeRisk * breakEvenAtR
+
+    if enableBreakEven and not movedToBE and close <= breakEvenTrigger
+        activeStop := actualEntry
+        movedToBE := true
+        if not na(stopLine)
+            line.set_y1(stopLine, activeStop)
+            line.set_y2(stopLine, activeStop)
+            line.set_color(stopLine, entryColor)
+        if showLabels
+            label.new(x = bar_index, y = high, text = "🔒 Break-Even",
+                 style = label.style_label_down, color = entryColor,
+                 textcolor = color.rgb(40, 50, 60), size = size.tiny)
+
+    bool stopHit = closeBasedExit ? close >= activeStop : high >= activeStop
+    bool targetHit = enableTarget and (closeBasedExit ? close <= tradeTarget : low <= tradeTarget)
+
+    float hardLossLevel = actualEntry + tradeRisk * maxLossR
+    bool hardLossHit = useATRMaxLoss and high >= hardLossLevel
+
+    if hardLossHit
+        strategy.close("WOLF-S", comment = "Sell HARD STOP")
+    else if stopHit
+        strategy.close("WOLF-S", comment = movedToBE ? "Sell BE" : "Sell SL")
+    else if targetHit
+        strategy.close("WOLF-S", comment = "Sell TP")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 تنظيف الصفقة بعد الإغلاق — مع حذف فعلي للخطوط
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bool tradeJustClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+
+if tradeJustClosed
+    lastExitBar := bar_index
+
+    // حذف فعلي للرسومات
+    if not na(riskBox)
+        box.delete(riskBox)
+        riskBox := na
+    if not na(entryLine)
+        line.delete(entryLine)
+        entryLine := na
+    if not na(stopLine)
+        line.delete(stopLine)
+        stopLine := na
+    if not na(targetLine)
+        line.delete(targetLine)
+        targetLine := na
+
+    tradeDirection := 0
+    tradeZoneType  := na
+    zoneEntryPrice := na
+    actualEntry    := na
+    tradeStop      := na
+    activeStop     := na
+    tradeTarget    := na
+    tradeRisk      := na
+    movedToBE      := false
+    tradeSource    := "—"
+    tradeStrength  := 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🎨 الخلفية والشموع
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+color chartBg = strategy.position_size > 0 ? color.new(longBackground, 15) :
+                strategy.position_size < 0 ? color.new(shortBackground, 15) :
+                idleBackground
+
+bgcolor(paintBackground ? chartBg : na, title = "Wolf Background")
+
+barcolor(colorTradeBars ?
+     strategy.position_size > 0 ? weeklyDemand :
+     strategy.position_size < 0 ? weeklySupply : na : na)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 بيانات اللوحة
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+int totalActive = 0
+int activeW = 0
+int activeD = 0
+int activeH = 0
+
+if array.size(zones) > 0
+    for i = 0 to array.size(zones) - 1
+        Zone z = array.get(zones, i)
+        if not z.used and f_typeEnabled(z.zoneType)
+            totalActive += 1
+            if z.zoneType <= 1
+                activeW += 1
+            else if z.zoneType <= 3
+                activeD += 1
+            else
+                activeH += 1
+
+string statusText =
+     strategy.position_size > 0 ? "شراء مفتوح" :
+     strategy.position_size < 0 ? "بيع مفتوح" :
+     pendingActive ? "أمر Limit معلّق" :
+     totalActive > 0 ? "انتظار لمس منطقة" :
+     "بانتظار مناطق HTF"
+
+color statusColor =
+     strategy.position_size > 0 ? weeklyDemand :
+     strategy.position_size < 0 ? weeklySupply :
+     pendingActive ? entryColor :
+     totalActive > 0 ? targetColor : textMuted
+
+string strengthText =
+     tradeStrength >= 3 ? "قناص ممتاز 🎯" :
+     tradeStrength == 2 ? "قوية جدًا" :
+     tradeStrength == 1 ? "تداخل واحد" :
+     tradeStrength == 0 and not na(tradeZoneType) ? "منطقة منفردة" : "—"
+
+int closedTrades = strategy.closedtrades
+int winningTrades = strategy.wintrades
+float winRate = closedTrades > 0 ? winningTrades * 100.0 / closedTrades : na
+string winRateText = na(winRate) ? "—" : str.tostring(winRate, "#.##") + "%"
+color resultColor = strategy.netprofit > 0 ? weeklyDemand : strategy.netprofit < 0 ? weeklySupply : textMuted
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 لوحة المعلومات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var table dashboard = table.new(
+     position.top_right, 2, 24,
+     bgcolor = panelBg, frame_color = panelBorder, frame_width = 2,
+     border_color = panelBorder, border_width = 1)
+
+if barstate.islast and showDashboard
+    table.cell(dashboard, 0, 0, "🐺 WOLF SNIPER", text_color = textMain, bgcolor = panelHeader, text_size = size.normal)
+    table.cell(dashboard, 1, 0, "V18 Multi-Zone", text_color = entryColor, bgcolor = panelHeader, text_size = size.normal)
+
+    table.cell(dashboard, 0, 1, "نمط التنفيذ", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 1, executionMode, text_color = entryColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 2, "حالة النظام", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 2, statusText, text_color = statusColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 3, "مناطق نشطة (W/D/H4)", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 3, str.tostring(activeW) + " / " + str.tostring(activeD) + " / " + str.tostring(activeH),
+         text_color = targetColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 4, "إجمالي المناطق", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 4, str.tostring(totalActive), text_color = targetColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 5, "الأسبوعي W", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 5, f_biasText(weeklyBias), text_color = f_biasColor(weeklyBias), bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 6, "اليومي D", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 6, f_biasText(dailyBias), text_color = f_biasColor(dailyBias), bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 7, "أربع ساعات H4", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 7, f_biasText(h4Bias), text_color = f_biasColor(h4Bias), bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 8, "مصدر الصفقة", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 8, tradeSource, text_color = entryColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 9, "قوة المنطقة", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 9, strengthText, text_color = tradeStrength >= 2 ? entryColor : textMain, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 10, "الاتجاه", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 10, f_directionText(tradeDirection),
+         text_color = tradeDirection == 1 ? weeklyDemand : tradeDirection == -1 ? weeklySupply : textMuted,
+         bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 11, "Zone Entry", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 11, f_price(zoneEntryPrice), text_color = entryColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 12, "Actual Entry", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 12, f_price(actualEntry), text_color = targetColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 13, "Stop Loss", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 13, f_price(activeStop), text_color = movedToBE ? entryColor : stopColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 14, "Take Profit", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 14, enableTarget ? f_price(tradeTarget) : "معطّل", text_color = targetColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 15, "R:R", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 15, enableTarget ? "1 : " + str.tostring(targetRR, "#.##") : "—", text_color = textMain, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 16, "Break-Even", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 16, movedToBE ? "مفعّل ✓" : "غير مفعّل",
+         text_color = movedToBE ? entryColor : textMuted, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 17, "حماية ATR", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 17, useATRMaxLoss ? str.tostring(maxLossR, "#.##") + " × R" : "معطّلة",
+         text_color = useATRMaxLoss ? stopColor : textMuted, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 18, "مناطق W/D/H4 المسجلة", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 18,
+         str.tostring(weeklyZonesCount) + " / " + str.tostring(dailyZonesCount) + " / " + str.tostring(h4ZonesCount),
+         text_color = textMain, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 19, "إشارات / تفعيلات", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 19, str.tostring(signalCount) + " / " + str.tostring(filledCount),
+         text_color = weeklyDemand, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 20, "أوامر ملغاة", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 20, str.tostring(cancelledOrders), text_color = stopColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 21, "مناطق مكسورة قبل الدخول", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 21, str.tostring(invalidZonesCount), text_color = stopColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 22, "نسبة النجاح", text_color = textMuted, bgcolor = panelCell)
+    table.cell(dashboard, 1, 22, winRateText, text_color = resultColor, bgcolor = panelCell)
+
+    table.cell(dashboard, 0, 23, "صافي الربح", text_color = textMain, bgcolor = panelHeader)
+    table.cell(dashboard, 1, 23, str.tostring(strategy.netprofit, "#.##"), text_color = resultColor, bgcolor = panelHeader)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 🐺 التنبيهات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(entrySignalEvent, title = "Wolf Entry Signal", message = "Wolf Sniper: تم إنشاء إعداد دخول.")
+alertcondition(longFillEvent,    title = "Wolf Buy Filled",   message = "Wolf Sniper: تم تنفيذ صفقة شراء.")
+alertcondition(shortFillEvent,   title = "Wolf Sell Filled",  message = "Wolf Sniper: تم تنفيذ صفقة بيع.")
+alertcondition(orderCancelEvent, title = "Wolf Order Cancelled", message = "Wolf Sniper: تم إلغاء أمر معلّق.")

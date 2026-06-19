@@ -1,0 +1,67 @@
+//@version=6
+strategy("05 - FVG Inversion Trade", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: FVG inversion يحدث عندما يغلق السعر عبر الفجوة القديمة بالاتجاه المعاكس، ثم يعيد اختبار منتصفها CE دون استخدام أي شموع مستقبلية.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بإشارات الشراء.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بإشارات البيع.")
+maxWaitBars = input.int(50, "أقصى انتظار لإعادة الاختبار", minval = 1, maxval = 300, group = grp03, tooltip = "عدد الشموع المسموح به بعد انقلاب FVG حتى يحدث retest.")
+useCeOnly = input.bool(true, "اشتراط عدم تجاوز CE", group = grp03, tooltip = "عند التفعيل يجب ألا يتجاوز الإغلاق منتصف FVG أثناء الاختبار.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "مسافة الوقف الافتراضية بالنقاط.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف إلى الوقف.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى نقطة الدخول عند تحقق ربح محدد.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة لتفعيل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت الجلسة عند تفعيل الفلتر.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الشراء والبيع.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+bullFvg = low > high[2]
+bearFvg = high < low[2]
+var float oldBullTop = na
+var float oldBullBot = na
+var float oldBearTop = na
+var float oldBearBot = na
+if bullFvg
+    oldBullTop := low
+    oldBullBot := high[2]
+if bearFvg
+    oldBearTop := low[2]
+    oldBearBot := high
+var float invBullTop = na
+var float invBullBot = na
+var int invBullBar = na
+var float invBearTop = na
+var float invBearBot = na
+var int invBearBar = na
+if not na(oldBearTop) and close > oldBearTop
+    invBullTop := oldBearTop
+    invBullBot := oldBearBot
+    invBullBar := bar_index
+if not na(oldBullBot) and close < oldBullBot
+    invBearTop := oldBullTop
+    invBearBot := oldBullBot
+    invBearBar := bar_index
+bullCe = (invBullTop + invBullBot) / 2.0
+bearCe = (invBearTop + invBearBot) / 2.0
+longSignal = enableLong and inSession and not na(invBullBar) and bar_index - invBullBar <= maxWaitBars and low <= invBullTop and (not useCeOnly or close >= bullCe) and close > open
+shortSignal = enableShort and inSession and not na(invBearBar) and bar_index - invBearBar <= maxWaitBars and high >= invBearBot and (not useCeOnly or close <= bearCe) and close < open
+if longSignal
+    strategy.entry("شراء FVG INV", strategy.long)
+if shortSignal
+    strategy.entry("بيع FVG INV", strategy.short)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - stopLossPips * pipSize
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + stopLossPips * pipSize
+strategy.exit("خروج شراء FVG INV", "شراء FVG INV", stop = longStop, limit = strategy.position_avg_price + stopLossPips * pipSize * rr)
+strategy.exit("خروج بيع FVG INV", "بيع FVG INV", stop = shortStop, limit = strategy.position_avg_price - stopLossPips * pipSize * rr)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء FVG Inversion")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع FVG Inversion")

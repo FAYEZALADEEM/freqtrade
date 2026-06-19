@@ -1,0 +1,214 @@
+//@version=6
+strategy(
+     title = "CRT 1AM - اختبار ميكانيكي V1",
+     overlay = true,
+     pyramiding = 0,
+     initial_capital = 10000,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 0,
+     process_orders_on_close = false,
+     calc_on_order_fills = true)
+
+// ==============================================================================
+// نموذج الاختبار
+// CRT 1 AM فقط:
+// 1) نطاق المرجع = قمة وقاع شمعة الساعة 01:00 على فريم الساعة.
+// 2) التلاعب = سحب أحد طرفي النطاق خلال شمعة الساعة 02:00 ثم الإغلاق داخله.
+// 3) التنفيذ = افتتاح شمعة الساعة 03:00 عبر صدور الأمر عند إغلاق آخر شمعة من ساعة 02:00.
+// 4) الوقف = خلف ذيل السحب + هامش قابل للتعديل.
+// 5) الأهداف = منتصف النطاق TP1 ثم الطرف المقابل TP2.
+// ==============================================================================
+
+// ─────────────────────────────────────────────────────────────────────────────
+// الإعدادات
+// ─────────────────────────────────────────────────────────────────────────────
+groupMain = "الإعدادات الأساسية"
+tz          = input.string("GMT-5", "توقيت النموذج — EST ثابت", group = groupMain,
+     tooltip = "المصدر ذكر EST. القيمة GMT-5 تثبت التوقيت دون تغيير الصيف/الشتاء.")
+direction   = input.string("الكل", "اتجاه التداول", options = ["الكل", "شراء فقط", "بيع فقط"], group = groupMain)
+startDate   = input.time(timestamp("01 Jan 2023 00:00 +0000"), "بداية الاختبار", group = groupMain)
+endDate     = input.time(timestamp("31 Dec 2030 23:59 +0000"), "نهاية الاختبار", group = groupMain)
+
+groupRisk = "الوقف والأهداف"
+pipSize      = input.float(0.0001, "حجم النقطة Pip", step = 0.00001, group = groupRisk,
+     tooltip = "EURUSD/GBPUSD غالبًا 0.0001، و USDJPY غالبًا 0.01.")
+bufferPips   = input.float(1.0, "هامش الوقف خلف ذيل السحب — Pips", minval = 0.0, step = 0.5, group = groupRisk)
+tp1Percent   = input.float(50.0, "نسبة الإغلاق عند منتصف النطاق %", minval = 1.0, maxval = 99.0, step = 1.0, group = groupRisk)
+
+groupFilter = "فلترة تنفيذية محافظة"
+closeInsideRequired = input.bool(true, "يشترط إغلاق ساعة السحب داخل النطاق", group = groupFilter,
+     tooltip = "يفعّل تعريفًا قابلًا للاختبار لسحب السيولة ثم العودة للنطاق.")
+rejectDoubleSweep = input.bool(true, "إلغاء اليوم إذا سُحب الطرفان في ساعة 02:00", group = groupFilter,
+     tooltip = "لأن اتجاه الصفقة يصبح غير محسوم إذا سُحبت القمة والقاع في نفس ساعة التلاعب.")
+
+groupVisual = "العرض"
+showRange  = input.bool(true, "إظهار نطاق CRT", group = groupVisual)
+showMarks  = input.bool(true, "إظهار إشارات السحب والدخول", group = groupVisual)
+showPanel  = input.bool(true, "إظهار شاشة الأداء", group = groupVisual)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// التوقيت والحالة اليومية
+// ─────────────────────────────────────────────────────────────────────────────
+int hNY = hour(time, tz)
+bool inDate = time >= startDate and time <= endDate
+bool newDay = bar_index == 0 or dayofmonth(time, tz) != dayofmonth(time[1], tz) or month(time, tz) != month(time[1], tz) or year(time, tz) != year(time[1], tz)
+
+bool isRangeHour = hNY == 1
+bool isSweepHour = hNY == 2
+bool isLastBarOfSweepHour = isSweepHour and hour(time_close, tz) == 3
+
+bool allowLong  = direction == "الكل" or direction == "شراء فقط"
+bool allowShort = direction == "الكل" or direction == "بيع فقط"
+
+float stopBuffer = bufferPips * pipSize
+
+// ─────────────────────────────────────────────────────────────────────────────
+// متغيرات نطاق اليوم وسحب السيولة
+// ─────────────────────────────────────────────────────────────────────────────
+var float rangeHigh = na
+var float rangeLow  = na
+var float purgeHigh = na
+var float purgeLow  = na
+var bool tradedToday = false
+var string dayStatus = "انتظار نطاق 01:00"
+
+var float activeHigh = na
+var float activeMid  = na
+var float activeLow  = na
+var float activeStop = na
+var float activeTP1  = na
+var float activeTP2  = na
+
+if newDay
+    rangeHigh := na
+    rangeLow := na
+    purgeHigh := na
+    purgeLow := na
+    tradedToday := false
+    dayStatus := "انتظار نطاق 01:00"
+
+// بناء نطاق شمعة الساعة 01:00 من شموع الفريم الحالي
+if isRangeHour
+    rangeHigh := na(rangeHigh) ? high : math.max(rangeHigh, high)
+    rangeLow  := na(rangeLow)  ? low  : math.min(rangeLow, low)
+    dayStatus := "بناء نطاق 01:00"
+
+bool rangeReady = not na(rangeHigh) and not na(rangeLow) and not isRangeHour
+float rangeMid = rangeReady ? (rangeHigh + rangeLow) / 2.0 : na
+
+// تجميع أعلى/أدنى حركة خلال شمعة الساعة 02:00
+if rangeReady and isSweepHour
+    purgeHigh := na(purgeHigh) ? high : math.max(purgeHigh, high)
+    purgeLow  := na(purgeLow)  ? low  : math.min(purgeLow, low)
+    dayStatus := "مراقبة سحب 02:00"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// تعريف السحب المؤكد عند إغلاق شمعة الساعة 02:00
+// ─────────────────────────────────────────────────────────────────────────────
+bool sweptLowRaw  = isLastBarOfSweepHour and rangeReady and purgeLow < rangeLow
+bool sweptHighRaw = isLastBarOfSweepHour and rangeReady and purgeHigh > rangeHigh
+
+bool sweptLow  = sweptLowRaw  and (not closeInsideRequired or close >= rangeLow)
+bool sweptHigh = sweptHighRaw and (not closeInsideRequired or close <= rangeHigh)
+bool doubleSweep = sweptLow and sweptHigh
+
+// الهدف الأول يجب أن يكون أمام سعر الإشارة لا خلفه.
+bool longTargetsValid  = rangeReady and close < rangeMid
+bool shortTargetsValid = rangeReady and close > rangeMid
+
+bool longSignal = inDate and isLastBarOfSweepHour and sweptLow and not sweptHigh and
+     allowLong and longTargetsValid and not tradedToday and strategy.position_size == 0
+
+bool shortSignal = inDate and isLastBarOfSweepHour and sweptHigh and not sweptLow and
+     allowShort and shortTargetsValid and not tradedToday and strategy.position_size == 0
+
+// عند عدم رفض السحب المزدوج، لا يزال الدخول يتطلب اتجاهًا وحيدًا واضحًا.
+// هذا يمنع اختراع قاعدة ترجيح لم يحددها المصدر.
+if isLastBarOfSweepHour and doubleSweep and rejectDoubleSweep
+    dayStatus := "ملغي: سحب الطرفين"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// الأوامر: يصدر الأمر عند نهاية 02:00 ليُنفذ افتراضيًا عند افتتاح 03:00
+// ─────────────────────────────────────────────────────────────────────────────
+if longSignal
+    float longStop = purgeLow - stopBuffer
+    activeHigh := rangeHigh
+    activeMid := rangeMid
+    activeLow := rangeLow
+    activeStop := longStop
+    activeTP1 := rangeMid
+    activeTP2 := rangeHigh
+    tradedToday := true
+    dayStatus := "شراء: تنفيذ 03:00"
+    strategy.entry("CRT شراء", strategy.long, comment = "سحب القاع ثم عودة")
+    strategy.exit("شراء TP1", from_entry = "CRT شراء", stop = longStop, limit = rangeMid, qty_percent = tp1Percent)
+    strategy.exit("شراء TP2", from_entry = "CRT شراء", stop = longStop, limit = rangeHigh, qty_percent = 100.0 - tp1Percent)
+
+if shortSignal
+    float shortStop = purgeHigh + stopBuffer
+    activeHigh := rangeHigh
+    activeMid := rangeMid
+    activeLow := rangeLow
+    activeStop := shortStop
+    activeTP1 := rangeMid
+    activeTP2 := rangeLow
+    tradedToday := true
+    dayStatus := "بيع: تنفيذ 03:00"
+    strategy.entry("CRT بيع", strategy.short, comment = "سحب القمة ثم عودة")
+    strategy.exit("بيع TP1", from_entry = "CRT بيع", stop = shortStop, limit = rangeMid, qty_percent = tp1Percent)
+    strategy.exit("بيع TP2", from_entry = "CRT بيع", stop = shortStop, limit = rangeLow, qty_percent = 100.0 - tp1Percent)
+
+if isLastBarOfSweepHour and not longSignal and not shortSignal and not doubleSweep
+    dayStatus := sweptLowRaw or sweptHighRaw ? "ملغي: لم يستوفِ التأكيد" : "ملغي: لا يوجد سحب"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// الرسم البصري
+// ─────────────────────────────────────────────────────────────────────────────
+plot(showRange and rangeReady ? rangeHigh : na, "قمة نطاق 01:00", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+plot(showRange and rangeReady ? rangeMid  : na, "منتصف نطاق 01:00", color = color.new(color.gray, 15), linewidth = 1, style = plot.style_linebr)
+plot(showRange and rangeReady ? rangeLow  : na, "قاع نطاق 01:00", color = color.new(color.green, 0), linewidth = 2, style = plot.style_linebr)
+
+plot(strategy.position_size != 0 ? activeStop : na, "وقف الصفقة", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTP1 : na, "الهدف الأول", color = color.new(color.orange, 0), linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTP2 : na, "الهدف الثاني", color = color.new(color.teal, 0), linewidth = 2, style = plot.style_linebr)
+
+plotshape(showMarks and sweptLow and isLastBarOfSweepHour, title = "سحب قاع النطاق", style = shape.triangleup,
+     location = location.belowbar, color = color.new(color.green, 0), size = size.tiny, text = "Sweep L")
+plotshape(showMarks and sweptHigh and isLastBarOfSweepHour, title = "سحب قمة النطاق", style = shape.triangledown,
+     location = location.abovebar, color = color.new(color.red, 0), size = size.tiny, text = "Sweep H")
+plotshape(showMarks and longSignal, title = "إشارة شراء CRT", style = shape.labelup,
+     location = location.belowbar, color = color.new(color.green, 0), textcolor = color.white, text = "BUY 3AM")
+plotshape(showMarks and shortSignal, title = "إشارة بيع CRT", style = shape.labeldown,
+     location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, text = "SELL 3AM")
+
+bgcolor(isRangeHour ? color.new(color.blue, 92) : isSweepHour ? color.new(color.orange, 92) : na)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// شاشة الأداء
+// ─────────────────────────────────────────────────────────────────────────────
+float profitFactor = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : na
+float winRate = strategy.closedtrades > 0 ? strategy.wintrades * 100.0 / strategy.closedtrades : na
+string tfWarning = timeframe.isintraday and timeframe.in_seconds() <= 900 ? "مناسب" : "استخدم M5 أو M15"
+
+var table panel = table.new(position.top_right, 2, 9, bgcolor = color.new(color.black, 15), frame_color = color.new(color.gray, 60), frame_width = 1)
+
+if barstate.islast and showPanel
+    table.cell(panel, 0, 0, "CRT 1AM V1", text_color = color.white, bgcolor = color.new(color.blue, 45))
+    table.cell(panel, 1, 0, "اختبار", text_color = color.white, bgcolor = color.new(color.blue, 45))
+    table.cell(panel, 0, 1, "الفريم", text_color = color.white)
+    table.cell(panel, 1, 1, tfWarning, text_color = tfWarning == "مناسب" ? color.lime : color.orange)
+    table.cell(panel, 0, 2, "الحالة", text_color = color.white)
+    table.cell(panel, 1, 2, dayStatus, text_color = color.yellow)
+    table.cell(panel, 0, 3, "إجمالي الصفقات", text_color = color.white)
+    table.cell(panel, 1, 3, str.tostring(strategy.closedtrades), text_color = color.white)
+    table.cell(panel, 0, 4, "نسبة النجاح", text_color = color.white)
+    table.cell(panel, 1, 4, na(winRate) ? "—" : str.tostring(winRate, "#.##") + "%", text_color = color.white)
+    table.cell(panel, 0, 5, "Profit Factor", text_color = color.white)
+    table.cell(panel, 1, 5, na(profitFactor) ? "—" : str.tostring(profitFactor, "#.###"), text_color = color.white)
+    table.cell(panel, 0, 6, "صافي الربح", text_color = color.white)
+    table.cell(panel, 1, 6, str.tostring(strategy.netprofit, "#.##"), text_color = strategy.netprofit >= 0 ? color.lime : color.red)
+    table.cell(panel, 0, 7, "التوقيت", text_color = color.white)
+    table.cell(panel, 1, 7, tz, text_color = color.white)
+    table.cell(panel, 0, 8, "النموذج", text_color = color.white)
+    table.cell(panel, 1, 8, "01→02→03", text_color = color.white)

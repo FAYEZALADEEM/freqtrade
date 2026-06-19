@@ -1,0 +1,66 @@
+//@version=6
+strategy("04 - SMC Order Block BOS", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: BOS هو إغلاق فوق/تحت آخر pivot مؤكد. Order Block هو آخر شمعة معاكسة قبل شمعة BOS ويتم الدخول عند إعادة اختبار نطاقها.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بصفقات الشراء.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بصفقات البيع.")
+pivotLen = input.int(5, "طول BOS", minval = 2, maxval = 50, group = grp03, tooltip = "عدد الشموع لاكتشاف القمم والقيعان المستخدمة في BOS.")
+maxRetestBars = input.int(30, "أقصى شموع لإعادة اختبار OB", minval = 1, maxval = 200, group = grp03, tooltip = "يلغي منطقة OB إذا لم تعد لها الأسعار خلال هذا العدد من الشموع.")
+useFvgConfirm = input.bool(false, "تأكيد FVG", group = grp04, tooltip = "يشترط وجود FVG مع BOS لزيادة الانتقائية.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف احتياطي عند عدم استخدام حدود OB.")
+bufferPips = input.float(1.0, "هامش خلف OB", minval = 0.0, group = grp06, tooltip = "هامش إضافي خلف قاع/قمة OB بالنقاط.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "مضاعف الهدف مقابل المخاطرة.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل وقف الخسارة إلى الدخول بعد حركة ربح محددة.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة لتفعيل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت التداول المسموح عند تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الإشارات.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+lastHigh = ta.valuewhen(not na(ph), ph, 0)
+lastLow = ta.valuewhen(not na(pl), pl, 0)
+bullBos = close > lastHigh
+bearBos = close < lastLow
+bullFvg = low > high[2]
+bearFvg = high < low[2]
+var float bullObHi = na
+var float bullObLo = na
+var int bullObBar = na
+var float bearObHi = na
+var float bearObLo = na
+var int bearObBar = na
+if bullBos and close[1] < open[1] and (not useFvgConfirm or bullFvg)
+    bullObHi := high[1]
+    bullObLo := low[1]
+    bullObBar := bar_index
+if bearBos and close[1] > open[1] and (not useFvgConfirm or bearFvg)
+    bearObHi := high[1]
+    bearObLo := low[1]
+    bearObBar := bar_index
+longSignal = enableLong and inSession and not na(bullObBar) and bar_index - bullObBar <= maxRetestBars and low <= bullObHi and close > bullObLo
+shortSignal = enableShort and inSession and not na(bearObBar) and bar_index - bearObBar <= maxRetestBars and high >= bearObLo and close < bearObHi
+if longSignal
+    strategy.entry("شراء OB BOS", strategy.long)
+if shortSignal
+    strategy.entry("بيع OB BOS", strategy.short)
+longRisk = math.max(stopLossPips * pipSize, strategy.position_avg_price - nz(bullObLo, strategy.position_avg_price - stopLossPips * pipSize) + bufferPips * pipSize)
+shortRisk = math.max(stopLossPips * pipSize, nz(bearObHi, strategy.position_avg_price + stopLossPips * pipSize) - strategy.position_avg_price + bufferPips * pipSize)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - longRisk
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + shortRisk
+strategy.exit("خروج شراء OB BOS", "شراء OB BOS", stop = longStop, limit = strategy.position_avg_price + longRisk * rr)
+strategy.exit("خروج بيع OB BOS", "بيع OB BOS", stop = shortStop, limit = strategy.position_avg_price - shortRisk * rr)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء SMC Order Block BOS")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع SMC Order Block BOS")

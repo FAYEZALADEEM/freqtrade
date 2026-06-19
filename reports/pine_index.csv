@@ -1,0 +1,114 @@
+file,path,pine_version,is_strategy,is_indicator,has_request_security,has_pivothigh,has_pivotlow,has_manual_sr,has_long,has_short,has_strategy_entry,has_strategy_exit,conversion_category,convertibility_score
+BBMA_Engulfing_Riyadh_Strategy_v6.pine,pine_strategies/BBMA_Engulfing_Riyadh_Strategy_v6.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+CRT_1AM_Strategy_V1_Pine_v6.pine,pine_strategies/CRT_1AM_Strategy_V1_Pine_v6.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+Dynamic_Swing_VWAP_TV_Match_2026_Filter.pine,pine_strategies/Dynamic_Swing_VWAP_TV_Match_2026_Filter.pine,6,True,False,False,False,False,True,True,True,True,False,C - تحتاج إعادة بناء,55
+Dynamic_Swing_VWAP_TV_Match_2026_Filter_FIX.pine,pine_strategies/Dynamic_Swing_VWAP_TV_Match_2026_Filter_FIX.pine,6,True,False,False,False,False,True,True,True,True,False,C - تحتاج إعادة بناء,55
+FAYEZ_1_AR_SETTINGS_FIXED_v2.pine,pine_strategies/FAYEZ_1_AR_SETTINGS_FIXED_v2.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+ICT_SMC_CRT_ORB_Unified_v6.pine,pine_strategies/ICT_SMC_CRT_ORB_Unified_v6.pine,6,True,False,True,False,False,False,True,True,True,True,C - تحتاج إعادة بناء,50
+ICT_Sniper_TV_Match_2025_FIXED.pine,pine_strategies/ICT_Sniper_TV_Match_2025_FIXED.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+LIB-STR001.pine,pine_strategies/LIB-STR001.pine,6,True,False,False,False,False,True,True,True,True,True,C - تحتاج إعادة بناء,55
+LIB-STR002.pine,pine_strategies/LIB-STR002.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR003.pine,pine_strategies/LIB-STR003.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR004.pine,pine_strategies/LIB-STR004.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR005.pine,pine_strategies/LIB-STR005.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR005_EMA_Structure_Engulfing_Manual_Test_v6.pine,pine_strategies/LIB-STR005_EMA_Structure_Engulfing_Manual_Test_v6.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR006.pine,pine_strategies/LIB-STR006.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR007.pine,pine_strategies/LIB-STR007.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR008.pine,pine_strategies/LIB-STR008.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR009.pine,pine_strategies/LIB-STR009.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR010.pine,pine_strategies/LIB-STR010.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR011.pine,pine_strategies/LIB-STR011.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR012.pine,pine_strategies/LIB-STR012.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR012_BBMA_Bollinger_Manual_Test_v6.pine,pine_strategies/LIB-STR012_BBMA_Bollinger_Manual_Test_v6.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR013.pine,pine_strategies/LIB-STR013.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR014.pine,pine_strategies/LIB-STR014.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR015.pine,pine_strategies/LIB-STR015.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR016.pine,pine_strategies/LIB-STR016.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR017.pine,pine_strategies/LIB-STR017.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR018.pine,pine_strategies/LIB-STR018.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR019.pine,pine_strategies/LIB-STR019.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR020.pine,pine_strategies/LIB-STR020.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR021.pine,pine_strategies/LIB-STR021.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR022.pine,pine_strategies/LIB-STR022.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR023.pine,pine_strategies/LIB-STR023.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR024.pine,pine_strategies/LIB-STR024.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR025.pine,pine_strategies/LIB-STR025.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR026.pine,pine_strategies/LIB-STR026.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR027.pine,pine_strategies/LIB-STR027.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR027_Volume_Fib_EMA_Manual_Test_v6.pine,pine_strategies/LIB-STR027_Volume_Fib_EMA_Manual_Test_v6.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR028.pine,pine_strategies/LIB-STR028.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR029.pine,pine_strategies/LIB-STR029.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR030.pine,pine_strategies/LIB-STR030.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR031.pine,pine_strategies/LIB-STR031.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR032.pine,pine_strategies/LIB-STR032.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR033.pine,pine_strategies/LIB-STR033.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR034.pine,pine_strategies/LIB-STR034.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR035.pine,pine_strategies/LIB-STR035.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR036.pine,pine_strategies/LIB-STR036.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR037.pine,pine_strategies/LIB-STR037.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR038.pine,pine_strategies/LIB-STR038.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR039.pine,pine_strategies/LIB-STR039.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR040.pine,pine_strategies/LIB-STR040.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR041.pine,pine_strategies/LIB-STR041.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR042.pine,pine_strategies/LIB-STR042.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR043.pine,pine_strategies/LIB-STR043.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR045.pine,pine_strategies/LIB-STR045.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR046.pine,pine_strategies/LIB-STR046.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR047.pine,pine_strategies/LIB-STR047.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR048.pine,pine_strategies/LIB-STR048.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR049.pine,pine_strategies/LIB-STR049.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR050.pine,pine_strategies/LIB-STR050.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR051.pine,pine_strategies/LIB-STR051.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR052.pine,pine_strategies/LIB-STR052.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR053.pine,pine_strategies/LIB-STR053.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR054.pine,pine_strategies/LIB-STR054.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR055.pine,pine_strategies/LIB-STR055.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR056.pine,pine_strategies/LIB-STR056.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR057.pine,pine_strategies/LIB-STR057.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR058.pine,pine_strategies/LIB-STR058.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR059.pine,pine_strategies/LIB-STR059.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR060.pine,pine_strategies/LIB-STR060.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR061.pine,pine_strategies/LIB-STR061.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR062.pine,pine_strategies/LIB-STR062.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR063.pine,pine_strategies/LIB-STR063.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR064.pine,pine_strategies/LIB-STR064.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR065.pine,pine_strategies/LIB-STR065.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR067.pine,pine_strategies/LIB-STR067.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR068.pine,pine_strategies/LIB-STR068.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR069.pine,pine_strategies/LIB-STR069.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR070.pine,pine_strategies/LIB-STR070.pine,6,True,False,False,True,True,True,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),65
+LIB-STR071.pine,pine_strategies/LIB-STR071.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR072.pine,pine_strategies/LIB-STR072.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR073.pine,pine_strategies/LIB-STR073.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+LIB-STR074.pine,pine_strategies/LIB-STR074.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+Market_Fluidity_Smart.pine,pine_strategies/Market_Fluidity_Smart.pine,6,False,True,False,True,True,True,True,True,False,False,C - تحتاج إعادة بناء,40
+Market_Fluidity_Smart_SRC_fixed_v2.pine,pine_strategies/Market_Fluidity_Smart_SRC_fixed_v2.pine,6,False,True,False,True,True,True,True,True,False,False,C - تحتاج إعادة بناء,40
+Mean_Reversion_ZScore_Indicator_V1_1_EURUSD_M15_Pine_v6.pine,pine_strategies/Mean_Reversion_ZScore_Indicator_V1_1_EURUSD_M15_Pine_v6.pine,6,False,True,True,False,False,False,True,True,False,False,D - غير مناسبة,25
+Mean_Reversion_ZScore_V1_EURUSD_M15_Pine_v6.pine,pine_strategies/Mean_Reversion_ZScore_V1_EURUSD_M15_Pine_v6.pine,6,True,False,True,False,False,False,True,True,True,True,C - تحتاج إعادة بناء,50
+PMax_Explorer_Arabic.pine,pine_strategies/PMax_Explorer_Arabic.pine,4,True,False,False,False,False,True,True,True,True,False,C - تحتاج إعادة بناء,55
+SMC_ICT_High_Frequency_Engine_v6.pine,pine_strategies/SMC_ICT_High_Frequency_Engine_v6.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+SMC_ICT_Riyadh_Strategy_v6.pine,pine_strategies/SMC_ICT_Riyadh_Strategy_v6.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+SMC_Quant_V1_GBPUSD_M15_Pine_v6.pine,pine_strategies/SMC_Quant_V1_GBPUSD_M15_Pine_v6.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+TrendMaster_Modified_M30_BASE_AP_Candidate_v1.pine,pine_strategies/TrendMaster_Modified_M30_BASE_AP_Candidate_v1.pine,6,True,False,True,False,False,True,True,True,True,True,D - غير مناسبة,25
+Wolf_Sniper_V18.pine,pine_strategies/Wolf_Sniper_V18.pine,6,True,False,True,True,True,True,True,True,True,False,D - غير مناسبة,35
+Wolf_V18_Pure.pine,pine_strategies/Wolf_V18_Pure.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+Wolf_V18_Pure_TradeFix_v6.pine,pine_strategies/Wolf_V18_Pure_TradeFix_v6.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+Wolf_V4_3_Trade_Test_Patch.pine,pine_strategies/Wolf_V4_3_Trade_Test_Patch.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+Wolf_V4_3_Trade_Test_Patch_Direction_Rerun.pine,pine_strategies/Wolf_V4_3_Trade_Test_Patch_Direction_Rerun.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+strategy_01_crt_thick_candle_break.pine,pine_strategies/strategy_01_crt_thick_candle_break.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+strategy_02_ict_silver_bullet_liquidity_sweep_fvg.pine,pine_strategies/strategy_02_ict_silver_bullet_liquidity_sweep_fvg.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+strategy_03_smc_liquidity_grab_imbalance_ob.pine,pine_strategies/strategy_03_smc_liquidity_grab_imbalance_ob.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+strategy_04_smc_order_block_bos.pine,pine_strategies/strategy_04_smc_order_block_bos.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+strategy_05_fvg_inversion_trade.pine,pine_strategies/strategy_05_fvg_inversion_trade.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+strategy_06_breaker_block_retest.pine,pine_strategies/strategy_06_breaker_block_retest.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+strategy_07_opening_range_breakout.pine,pine_strategies/strategy_07_opening_range_breakout.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+strategy_08_ma_pullback_trend_following.pine,pine_strategies/strategy_08_ma_pullback_trend_following.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+strategy_09_adx_ema_intraday_trend.pine,pine_strategies/strategy_09_adx_ema_intraday_trend.pine,6,True,False,True,False,False,False,True,True,True,True,C - تحتاج إعادة بناء,50
+strategy_10_vwap_pullback.pine,pine_strategies/strategy_10_vwap_pullback.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+strategy_11_one_hour_forex_reversal.pine,pine_strategies/strategy_11_one_hour_forex_reversal.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+strategy_12_rsi_divergence_reversal.pine,pine_strategies/strategy_12_rsi_divergence_reversal.pine,6,True,False,False,True,True,False,True,True,True,True,A - قابلة مباشرة,90
+trend_pullback_h1_v2_3.pine,pine_strategies/trend_pullback_h1_v2_3.pine,6,True,False,True,False,False,False,True,True,True,True,C - تحتاج إعادة بناء,50
+vsa_conservative_template_v2.pine,pine_strategies/vsa_conservative_template_v2.pine,6,True,False,False,False,False,False,True,True,True,True,A - قابلة مباشرة,80
+vsa_mtf_template_v3.pine,pine_strategies/vsa_mtf_template_v3.pine,6,True,False,True,False,False,False,True,True,True,True,C - تحتاج إعادة بناء,50
+wolf_strategy-1.pine,pine_strategies/wolf_strategy-1.pine,6,True,False,True,True,True,False,True,True,True,True,B - تحتاج تعديل بسيط (pivots/manual sr),60
+استراتيجية_جنون_التداول_v2_تصحيح_خطأ_resetSequence.pine,pine_strategies/استراتيجية_جنون_التداول_v2_تصحيح_خطأ_resetSequence.pine,6,True,False,True,False,False,False,True,True,True,True,C - تحتاج إعادة بناء,50

@@ -1,0 +1,50 @@
+//@version=6
+strategy("10 - VWAP Pullback", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: rejection candle عند VWAP هي شمعة تلمس VWAP وتغلق بعيدًا عنه في اتجاه الحركة السابقة، مع اشتراط ابتعاد سابق عن VWAP.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بشراء إعادة اختبار VWAP من الأعلى.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح ببيع إعادة اختبار VWAP من الأسفل.")
+awayPips = input.float(10.0, "أدنى ابتعاد عن VWAP", minval = 0.1, group = grp03, tooltip = "يجب أن يكون السعر قد ابتعد عن VWAP بهذا المقدار قبل العودة.")
+lookbackAway = input.int(10, "شموع البحث عن الابتعاد", minval = 1, maxval = 100, group = grp03, tooltip = "عدد الشموع السابقة المستخدمة للتحقق من ابتعاد السعر عن VWAP.")
+rvolLen = input.int(20, "طول RVOL", minval = 1, maxval = 200, group = grp04, tooltip = "طول متوسط الحجم لحساب حجم نسبي اختياري.")
+minRvol = input.float(1.0, "أدنى RVOL", minval = 0.1, step = 0.1, group = grp04, tooltip = "أدنى حجم نسبي لقبول الإشارة.")
+stopLossPips = input.float(15.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "وقف الخسارة خلف VWAP أو نقطة الدخول حسب السوق.")
+rr = input.float(1.5, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "نسبة الهدف إلى المخاطرة.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى نقطة الدخول بعد حركة ربح محددة.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة قبل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("1100-1400", "وقت تداول VWAP", group = grp09, tooltip = "جلسة مقترحة للاستراتيجية ولا تعمل إلا عند تفعيل الفلتر.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الدخول.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+vwap = ta.vwap(hlc3)
+rvol = volume / math.max(ta.sma(volume, rvolLen), 1)
+away = awayPips * pipSize
+wasAboveAway = ta.highest(close - vwap, lookbackAway) > away
+wasBelowAway = ta.highest(vwap - close, lookbackAway) > away
+longReject = low <= vwap and close > vwap and close > open
+shortReject = high >= vwap and close < vwap and close < open
+longSignal = enableLong and inSession and wasAboveAway and longReject and rvol >= minRvol
+shortSignal = enableShort and inSession and wasBelowAway and shortReject and rvol >= minRvol
+if longSignal
+    strategy.entry("شراء VWAP", strategy.long)
+if shortSignal
+    strategy.entry("بيع VWAP", strategy.short)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - stopLossPips * pipSize
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + stopLossPips * pipSize
+strategy.exit("خروج شراء VWAP", "شراء VWAP", stop = longStop, limit = strategy.position_avg_price + stopLossPips * pipSize * rr)
+strategy.exit("خروج بيع VWAP", "بيع VWAP", stop = shortStop, limit = strategy.position_avg_price - stopLossPips * pipSize * rr)
+plot(vwap, "VWAP", color = color.purple)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء VWAP Pullback")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع VWAP Pullback")

@@ -1,0 +1,152 @@
+//@version=6
+strategy("SMC/ICT - High Frequency Engine v6", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=10, max_boxes_count=500, max_lines_count=500)
+
+// ==========================================
+// الإعدادات والجلسات (Preserved Configurations)
+// ==========================================
+string tz_input        = input.string("America/New_York", title="المنطقة الزمنية | Timezone", options=["Asia/Riyadh", "America/New_York", "GMT+3", "UTC"])
+string crt_session_str = input.string("0100-0200", title="ساعة تحديد النطاق | CRT Reference Hour")
+// تم توسيع الكيلزون لدمج لندن ونيويورك الصباحية لزيادة الصفقات بشكل هائل
+string kz_session_str  = input.string("0200-1100", title="ساعة الكيلزون والتلاعب | Killzone Window")
+float  sl_buffer       = input.float(1.5, title="هامش وقف الخسارة للنقاط | SL Buffer (Pips)") * 10 * syminfo.mintick
+
+int    max_daily_trades = input.int(8, title="الحد الأقصى للصفقات يومياً (تم رفعه)")
+int    swing_len        = input.int(8, title="حجم هيكل السيولة (Swing Length)")
+
+// ==========================================
+// التحقق من الأوقات وتظليل الخلفية
+// ==========================================
+bool in_crt_session = not na(time(timeframe.period, crt_session_str, tz_input))
+bool in_killzone    = not na(time(timeframe.period, kz_session_str, tz_input))
+
+bgcolor(in_killzone ? color.new(color.red, 95) : na, title="Killzone Window")
+
+var int daily_trade_count = 0
+bool is_new_day = ta.change(time("D")) != 0
+
+if is_new_day
+    daily_trade_count := 0
+
+// ==========================================
+// ذاكرة النطاق (CRT - Preserved Rule)
+// ==========================================
+var float crt_high = na
+var float crt_low  = na
+var float session_high = na
+var float session_low  = na
+var bool  crt_set  = false
+
+if in_crt_session
+    if not crt_set
+        session_high := high
+        session_low  := low
+        crt_set      := true
+    else
+        session_high := math.max(high, session_high)
+        session_low  := math.min(low, session_low)
+else
+    if crt_set
+        crt_high := session_high
+        crt_low  := session_low
+        crt_set  := false
+
+// ==========================================
+// صائد السيولة الهيكلية (Fractal Liquidity Tracker)
+// ==========================================
+float swing_h = ta.pivothigh(high, swing_len, swing_len)
+float swing_l = ta.pivotlow(low, swing_len, swing_len)
+
+var float last_liq_high = na
+var float last_liq_low  = na
+
+if not na(swing_h)
+    last_liq_high := swing_h
+if not na(swing_l)
+    last_liq_low  := swing_l
+
+// ==========================================
+// رصد التلاعب والسيولة (Purge Memory - 5 Bars)
+// ==========================================
+var int sweep_h_bars = 100
+var int sweep_l_bars = 100
+var float sweep_h_price = na
+var float sweep_l_price = na
+
+// إذا ضرب السعر قمة النطاق أو قمة هيكلية قريبة (Turtle Soup)
+if in_killzone and ((not na(crt_high) and high > crt_high) or (not na(last_liq_high) and high > last_liq_high))
+    sweep_h_bars := 0
+    sweep_h_price := high
+else
+    sweep_h_bars += 1
+
+// إذا ضرب السعر قاع النطاق أو قاع هيكلي قريب (Turtle Soup)
+if in_killzone and ((not na(crt_low) and low < crt_low) or (not na(last_liq_low) and low < last_liq_low))
+    sweep_l_bars := 0
+    sweep_l_price := low
+else
+    sweep_l_bars += 1
+
+// ==========================================
+// إدارة فجوات الـ FVG بالفهرسة العكسية اليدوية (Preserved User Rule)
+// ==========================================
+var float[] bear_fvg_top = array.new_float()
+var float[] bear_fvg_bot = array.new_float()
+var float[] bull_fvg_top = array.new_float()
+var float[] bull_fvg_bot = array.new_float()
+
+bool is_bear_fvg = low[2] > high[0] and close[1] < low[2]
+bool is_bull_fvg = high[2] < low[0] and close[1] > high[2]
+
+if is_bear_fvg
+    array.push(bear_fvg_top, low[2])
+    array.push(bear_fvg_bot, high[0])
+if is_bull_fvg
+    array.push(bull_fvg_top, high[2])
+    array.push(bull_fvg_bot, low[0])
+
+if array.size(bear_fvg_top) > 0
+    for i = 0 to array.size(bear_fvg_top) - 1
+        int rev_idx = array.size(bear_fvg_top) - 1 - i
+        float top_val = array.get(bear_fvg_top, rev_idx)
+        if close > top_val
+            array.remove(bear_fvg_top, rev_idx)
+            array.remove(bear_fvg_bot, rev_idx)
+
+if array.size(bull_fvg_top) > 0
+    for i = 0 to array.size(bull_fvg_top) - 1
+        int rev_idx = array.size(bull_fvg_top) - 1 - i
+        float bot_val = array.get(bull_fvg_bot, rev_idx)
+        if close < bot_val
+            array.remove(bull_fvg_top, rev_idx)
+            array.remove(bull_fvg_bot, rev_idx)
+
+// ==========================================
+// تنفيذ الصفقات عالي التردد (High Frequency Execution)
+// ==========================================
+// البيع: يجب أن يكون السحب حدث خلال آخر 5 شموع + تشكلت فجوة حالياً
+bool short_condition = in_killzone and sweep_h_bars <= 5 and is_bear_fvg and daily_trade_count < max_daily_trades and strategy.position_size == 0
+
+if short_condition
+    float entry_px   = close
+    float stop_level = sweep_h_price + sl_buffer
+    float risk_amt   = stop_level - entry_px
+    float tp_level   = entry_px - (risk_amt * 2) // الهدف ميكانيكي 1:2
+
+    strategy.entry("HF-SHORT", strategy.short)
+    strategy.exit("TP-Short", "HF-SHORT", limit=tp_level, stop=stop_level)
+    sweep_h_bars := 100 // تصفير الذاكرة لتجنب الدخول المتكرر على نفس السحب
+    daily_trade_count += 1
+
+// الشراء: يجب أن يكون السحب حدث خلال آخر 5 شموع + تشكلت فجوة حالياً
+bool long_condition = in_killzone and sweep_l_bars <= 5 and is_bull_fvg and daily_trade_count < max_daily_trades and strategy.position_size == 0
+
+if long_condition
+    float entry_px   = close
+    float stop_level = sweep_l_price - sl_buffer
+    float risk_amt   = entry_px - stop_level
+    float tp_level   = entry_px + (risk_amt * 2) // الهدف ميكانيكي 1:2
+
+    strategy.entry("HF-LONG", strategy.long)
+    strategy.exit("TP-Long", "HF-LONG", limit=tp_level, stop=stop_level)
+    sweep_l_bars := 100
+    daily_trade_count += 1

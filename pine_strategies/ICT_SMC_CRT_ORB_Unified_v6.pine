@@ -1,0 +1,519 @@
+//@version=6
+strategy("ICT SMC CRT ORB Unified v6", overlay=true,
+     initial_capital=10000, currency=currency.USD,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0,
+     process_orders_on_close=true, calc_on_every_tick=false,
+     max_boxes_count=80, max_lines_count=80, max_labels_count=150)
+
+// ============================================================
+// 1. General Inputs
+// ============================================================
+groupGeneral = "1. الإعدادات العامة"
+tradeSide = input.string("Both", "اتجاه التداول", options=["Both", "Long only", "Short only"], group=groupGeneral)
+confirmOnClose = input.bool(true, "تأكيد الإشارة بعد إغلاق الشمعة", group=groupGeneral)
+minBarsBetweenTrades = input.int(5, "أقل عدد شموع بين الصفقات", minval=0, group=groupGeneral)
+entryMode = input.string("Market on POI touch", "طريقة الدخول", options=["Market on POI touch", "Limit at FVG CE"], group=groupGeneral)
+
+useDateFilter = input.bool(true, "تفعيل تاريخ الاختبار", group=groupGeneral)
+startDate = input.time(timestamp("01 Jan 2020 00:00 +0000"), "بداية الاختبار", group=groupGeneral)
+endDate = input.time(timestamp("31 Dec 2035 23:59 +0000"), "نهاية الاختبار", group=groupGeneral)
+
+// ============================================================
+// 2. Time Filters
+// ============================================================
+groupTime = "2. الوقت والجلسات"
+useSessionFilter = input.bool(true, "تفعيل فلتر مناطق القتل", group=groupTime)
+sessionTimezone = input.string("America/New_York", "المنطقة الزمنية للجلسات", group=groupTime)
+useLondon = input.bool(true, "جلسة لندن", group=groupTime)
+londonSession = input.session("0200-0500", "لندن", group=groupTime)
+useNyAm = input.bool(true, "جلسة نيويورك صباحاً", group=groupTime)
+nyAmSession = input.session("0700-1000", "نيويورك صباحاً", group=groupTime)
+useSilverBullet = input.bool(false, "نوافذ Silver Bullet", group=groupTime)
+silverLondonSession = input.session("0300-0400", "Silver Bullet لندن", group=groupTime)
+silverNyAmSession = input.session("1000-1100", "Silver Bullet نيويورك صباحاً", group=groupTime)
+silverNyPmSession = input.session("1400-1500", "Silver Bullet نيويورك مساءً", group=groupTime)
+manualNewsBlock = input.bool(false, "تعطيل الدخول يدوياً وقت الأخبار", group=groupTime)
+
+inLondon = useLondon and not na(time(timeframe.period, londonSession, sessionTimezone))
+inNyAm = useNyAm and not na(time(timeframe.period, nyAmSession, sessionTimezone))
+inSilver = useSilverBullet and (not na(time(timeframe.period, silverLondonSession, sessionTimezone)) or not na(time(timeframe.period, silverNyAmSession, sessionTimezone)) or not na(time(timeframe.period, silverNyPmSession, sessionTimezone)))
+inSession = not useSessionFilter or inLondon or inNyAm or inSilver
+inDate = not useDateFilter or (time >= startDate and time <= endDate)
+confirmed = confirmOnClose ? barstate.isconfirmed : true
+tradeTimeOk = confirmed and inSession and inDate and not manualNewsBlock
+
+// ============================================================
+// 3. Bias Filters
+// ============================================================
+groupBias = "3. الانحياز"
+biasMode = input.string("HTF EMA", "طريقة الانحياز", options=["None", "HTF EMA", "Daily Open"], group=groupBias)
+htfBiasTf = input.timeframe("60", "إطار الانحياز", group=groupBias)
+fastLen = input.int(20, "EMA سريع", minval=1, group=groupBias)
+slowLen = input.int(50, "EMA بطيء", minval=2, group=groupBias)
+slopeBars = input.int(3, "ميل المتوسط", minval=1, group=groupBias)
+
+f_htfBull() =>
+    fast = ta.ema(close, fastLen)
+    slow = ta.ema(close, slowLen)
+    fast > slow and slow > slow[slopeBars]
+
+f_htfBear() =>
+    fast = ta.ema(close, fastLen)
+    slow = ta.ema(close, slowLen)
+    fast < slow and slow < slow[slopeBars]
+
+htfBull = request.security(syminfo.tickerid, htfBiasTf, f_htfBull()[1], lookahead=barmerge.lookahead_off)
+htfBear = request.security(syminfo.tickerid, htfBiasTf, f_htfBear()[1], lookahead=barmerge.lookahead_off)
+dailyOpen = request.security(syminfo.tickerid, "D", open, lookahead=barmerge.lookahead_off)
+
+longBiasOk = biasMode == "None" or (biasMode == "HTF EMA" and htfBull) or (biasMode == "Daily Open" and close >= dailyOpen)
+shortBiasOk = biasMode == "None" or (biasMode == "HTF EMA" and htfBear) or (biasMode == "Daily Open" and close <= dailyOpen)
+
+// ============================================================
+// 4. Liquidity, CRT, and ORB Context
+// ============================================================
+groupContext = "4. السيولة وCRT وORB"
+useExternalSweep = input.bool(true, "سحب قمم/قيعان خارجية", group=groupContext)
+sweepLookback = input.int(20, "مدى السيولة الخارجية", minval=3, group=groupContext)
+sweepBufferTicks = input.int(1, "هامش السحب بعدد Tick", minval=0, group=groupContext)
+contextValidBars = input.int(40, "صلاحية سياق السحب", minval=3, group=groupContext)
+
+useCrtContext = input.bool(true, "تفعيل CRT من شمعة إطار أعلى", group=groupContext)
+crtTf = input.timeframe("240", "إطار شمعة CRT", group=groupContext)
+
+useOrbContext = input.bool(false, "تفعيل ORB", group=groupContext)
+orbSession = input.session("0930-0945", "نافذة بناء ORB", group=groupContext)
+orbValidBars = input.int(80, "صلاحية ORB بالشموع", minval=5, group=groupContext)
+
+priorHigh = ta.highest(high[1], sweepLookback)
+priorLow = ta.lowest(low[1], sweepLookback)
+sweepBuffer = sweepBufferTicks * syminfo.mintick
+
+crtHigh = request.security(syminfo.tickerid, crtTf, high[1], lookahead=barmerge.lookahead_off)
+crtLow = request.security(syminfo.tickerid, crtTf, low[1], lookahead=barmerge.lookahead_off)
+crtMid = (crtHigh + crtLow) / 2.0
+
+inOrbBuild = useOrbContext and not na(time(timeframe.period, orbSession, sessionTimezone))
+orbStart = inOrbBuild and not inOrbBuild[1]
+var float orbHigh = na
+var float orbLow = na
+var int orbEndBar = na
+
+if orbStart
+    orbHigh := high
+    orbLow := low
+    orbEndBar := na
+else if inOrbBuild
+    orbHigh := math.max(nz(orbHigh, high), high)
+    orbLow := math.min(nz(orbLow, low), low)
+
+if useOrbContext and not inOrbBuild and inOrbBuild[1]
+    orbEndBar := bar_index
+
+orbReady = useOrbContext and not na(orbHigh) and not na(orbLow) and not na(orbEndBar) and bar_index - orbEndBar <= orbValidBars
+
+externalBullSweep = useExternalSweep and low < priorLow - sweepBuffer and close > priorLow
+externalBearSweep = useExternalSweep and high > priorHigh + sweepBuffer and close < priorHigh
+crtBullSweep = useCrtContext and low < crtLow - sweepBuffer and close > crtLow
+crtBearSweep = useCrtContext and high > crtHigh + sweepBuffer and close < crtHigh
+orbBullSweep = orbReady and low < orbLow - sweepBuffer and close > orbLow
+orbBearSweep = orbReady and high > orbHigh + sweepBuffer and close < orbHigh
+
+bullSweep = confirmed and (externalBullSweep or crtBullSweep or orbBullSweep)
+bearSweep = confirmed and (externalBearSweep or crtBearSweep or orbBearSweep)
+
+// ============================================================
+// 5. Market Structure Shift and Displacement
+// ============================================================
+groupStructure = "5. MSS والإزاحة"
+requireSweep = input.bool(true, "اشتراط سحب سيولة قبل الدخول", group=groupStructure)
+requireMss = input.bool(true, "اشتراط MSS / CHoCH", group=groupStructure)
+mssLookback = input.int(10, "مدى كسر الهيكل", minval=2, group=groupStructure)
+requireDisplacement = input.bool(true, "اشتراط إزاحة قوية", group=groupStructure)
+dispLen = input.int(20, "متوسط مدى الإزاحة", minval=3, group=groupStructure)
+dispMult = input.float(1.2, "مضاعف الإزاحة", minval=0.1, step=0.1, group=groupStructure)
+
+barRange = math.max(high - low, syminfo.mintick)
+avgRange = ta.sma(barRange, dispLen)
+bodyRange = math.abs(close - open)
+bullDisplacement = close > open and (barRange > avgRange * dispMult or bodyRange > avgRange * dispMult * 0.55)
+bearDisplacement = close < open and (barRange > avgRange * dispMult or bodyRange > avgRange * dispMult * 0.55)
+mssBreakHigh = ta.highest(high[1], mssLookback)
+mssBreakLow = ta.lowest(low[1], mssLookback)
+
+var bool bullContext = false
+var bool bearContext = false
+var bool bullMssDone = false
+var bool bearMssDone = false
+var int bullContextBar = na
+var int bearContextBar = na
+var float bullSweepLow = na
+var float bearSweepHigh = na
+var float bullBreakLevel = na
+var float bearBreakLevel = na
+var float bullImpulseHigh = na
+var float bearImpulseLow = na
+
+if bullSweep
+    bullContext := true
+    bullMssDone := false
+    bullContextBar := bar_index
+    bullSweepLow := low
+    bullBreakLevel := mssBreakHigh
+    bullImpulseHigh := na
+
+if bearSweep
+    bearContext := true
+    bearMssDone := false
+    bearContextBar := bar_index
+    bearSweepHigh := high
+    bearBreakLevel := mssBreakLow
+    bearImpulseLow := na
+
+if bullContext
+    bullSweepLow := math.min(nz(bullSweepLow, low), low)
+if bearContext
+    bearSweepHigh := math.max(nz(bearSweepHigh, high), high)
+
+if bullContext and bar_index - bullContextBar > contextValidBars
+    bullContext := false
+    bullMssDone := false
+if bearContext and bar_index - bearContextBar > contextValidBars
+    bearContext := false
+    bearMssDone := false
+
+bullMss = confirmed and bullContext and not bullMssDone and close > bullBreakLevel and (not requireDisplacement or bullDisplacement)
+bearMss = confirmed and bearContext and not bearMssDone and close < bearBreakLevel and (not requireDisplacement or bearDisplacement)
+
+if bullMss
+    bullMssDone := true
+    bullImpulseHigh := high
+if bearMss
+    bearMssDone := true
+    bearImpulseLow := low
+
+if bullMssDone
+    bullImpulseHigh := math.max(nz(bullImpulseHigh, high), high)
+if bearMssDone
+    bearImpulseLow := math.min(nz(bearImpulseLow, low), low)
+
+longContextOk = not requireSweep or bullContext
+shortContextOk = not requireSweep or bearContext
+longMssOk = not requireMss or bullMssDone or bullMss
+shortMssOk = not requireMss or bearMssDone or bearMss
+
+// ============================================================
+// 6. FVG, OB, OTE, Premium/Discount
+// ============================================================
+groupPoi = "6. مناطق الدخول"
+allowFvgEntry = input.bool(true, "الدخول من FVG", group=groupPoi)
+allowObEntry = input.bool(true, "الدخول من Order Block تقريبي", group=groupPoi)
+requireFvgDisplacement = input.bool(false, "اشتراط شمعة إزاحة داخل FVG", group=groupPoi)
+fvgValidBars = input.int(50, "صلاحية FVG", minval=3, group=groupPoi)
+obSearchBars = input.int(20, "البحث عن آخر شمعة عكسية للـ OB", minval=2, maxval=100, group=groupPoi)
+obValidBars = input.int(60, "صلاحية OB", minval=3, group=groupPoi)
+requireOte = input.bool(false, "اشتراط منطقة OTE", group=groupPoi)
+requirePd = input.bool(false, "اشتراط Discount للشراء وPremium للبيع", group=groupPoi)
+pdMode = input.string("Rolling Range", "مصدر Premium/Discount", options=["Rolling Range", "CRT Range"], group=groupPoi)
+pdLookback = input.int(80, "مدى Premium/Discount", minval=10, group=groupPoi)
+showZones = input.bool(true, "عرض مناطق FVG وOB", group=groupPoi)
+extendZones = input.int(40, "تمديد المناطق يميناً", minval=1, group=groupPoi)
+
+middleBullDisp = close[1] > open[1] and (high[1] - low[1]) > avgRange[1] * dispMult
+middleBearDisp = close[1] < open[1] and (high[1] - low[1]) > avgRange[1] * dispMult
+bullFvgNew = confirmed and low > high[2] and (not requireFvgDisplacement or middleBullDisp)
+bearFvgNew = confirmed and high < low[2] and (not requireFvgDisplacement or middleBearDisp)
+
+var float bullFvgTop = na
+var float bullFvgBottom = na
+var float bullFvgCe = na
+var int bullFvgBar = na
+var bool bullFvgActive = false
+var box bullFvgBox = na
+
+var float bearFvgTop = na
+var float bearFvgBottom = na
+var float bearFvgCe = na
+var int bearFvgBar = na
+var bool bearFvgActive = false
+var box bearFvgBox = na
+
+if bullFvgNew and longContextOk and longMssOk
+    bullFvgTop := low
+    bullFvgBottom := high[2]
+    bullFvgCe := (bullFvgTop + bullFvgBottom) / 2.0
+    bullFvgBar := bar_index
+    bullFvgActive := true
+    if showZones
+        if not na(bullFvgBox)
+            box.delete(bullFvgBox)
+        bullFvgBox := box.new(bar_index - 2, bullFvgTop, bar_index + extendZones, bullFvgBottom, bgcolor=color.new(color.teal, 85), border_color=color.new(color.teal, 35))
+
+if bearFvgNew and shortContextOk and shortMssOk
+    bearFvgTop := low[2]
+    bearFvgBottom := high
+    bearFvgCe := (bearFvgTop + bearFvgBottom) / 2.0
+    bearFvgBar := bar_index
+    bearFvgActive := true
+    if showZones
+        if not na(bearFvgBox)
+            box.delete(bearFvgBox)
+        bearFvgBox := box.new(bar_index - 2, bearFvgTop, bar_index + extendZones, bearFvgBottom, bgcolor=color.new(color.maroon, 85), border_color=color.new(color.maroon, 35))
+
+if bullFvgActive and bar_index - bullFvgBar > fvgValidBars
+    bullFvgActive := false
+if bearFvgActive and bar_index - bearFvgBar > fvgValidBars
+    bearFvgActive := false
+
+if not na(bullFvgBox)
+    box.set_right(bullFvgBox, bar_index + extendZones)
+if not na(bearFvgBox)
+    box.set_right(bearFvgBox, bar_index + extendZones)
+
+bullFvgTouch = bullFvgActive and bar_index > bullFvgBar and low <= bullFvgTop and high >= bullFvgBottom
+bearFvgTouch = bearFvgActive and bar_index > bearFvgBar and high >= bearFvgBottom and low <= bearFvgTop
+bullFvgCeTouch = bullFvgActive and bar_index > bullFvgBar and low <= bullFvgCe
+bearFvgCeTouch = bearFvgActive and bar_index > bearFvgBar and high >= bearFvgCe
+
+var float bullObTop = na
+var float bullObBottom = na
+var int bullObBar = na
+var bool bullObActive = false
+var box bullObBox = na
+
+var float bearObTop = na
+var float bearObBottom = na
+var int bearObBar = na
+var bool bearObActive = false
+var box bearObBox = na
+
+if bullMss
+    int foundBullOb = na
+    for i = 1 to obSearchBars
+        if na(foundBullOb) and close[i] < open[i]
+            foundBullOb := i
+    if not na(foundBullOb)
+        bullObTop := open[foundBullOb]
+        bullObBottom := low[foundBullOb]
+        bullObBar := bar_index - foundBullOb
+        bullObActive := true
+        if showZones
+            if not na(bullObBox)
+                box.delete(bullObBox)
+            bullObBox := box.new(bullObBar, bullObTop, bar_index + extendZones, bullObBottom, bgcolor=color.new(color.green, 86), border_color=color.new(color.green, 35))
+
+if bearMss
+    int foundBearOb = na
+    for i = 1 to obSearchBars
+        if na(foundBearOb) and close[i] > open[i]
+            foundBearOb := i
+    if not na(foundBearOb)
+        bearObTop := high[foundBearOb]
+        bearObBottom := open[foundBearOb]
+        bearObBar := bar_index - foundBearOb
+        bearObActive := true
+        if showZones
+            if not na(bearObBox)
+                box.delete(bearObBox)
+            bearObBox := box.new(bearObBar, bearObTop, bar_index + extendZones, bearObBottom, bgcolor=color.new(color.red, 86), border_color=color.new(color.red, 35))
+
+if bullObActive and bar_index - bullObBar > obValidBars
+    bullObActive := false
+if bearObActive and bar_index - bearObBar > obValidBars
+    bearObActive := false
+
+if not na(bullObBox)
+    box.set_right(bullObBox, bar_index + extendZones)
+if not na(bearObBox)
+    box.set_right(bearObBox, bar_index + extendZones)
+
+bullObTouch = bullObActive and low <= bullObTop and high >= bullObBottom
+bearObTouch = bearObActive and high >= bearObBottom and low <= bearObTop
+
+bullOteReady = bullMssDone and not na(bullSweepLow) and not na(bullImpulseHigh) and bullImpulseHigh > bullSweepLow
+bearOteReady = bearMssDone and not na(bearSweepHigh) and not na(bearImpulseLow) and bearSweepHigh > bearImpulseLow
+bullOteTop = bullOteReady ? bullImpulseHigh - (bullImpulseHigh - bullSweepLow) * 0.62 : na
+bullOteBottom = bullOteReady ? bullImpulseHigh - (bullImpulseHigh - bullSweepLow) * 0.79 : na
+bearOteTop = bearOteReady ? bearImpulseLow + (bearSweepHigh - bearImpulseLow) * 0.79 : na
+bearOteBottom = bearOteReady ? bearImpulseLow + (bearSweepHigh - bearImpulseLow) * 0.62 : na
+bullOteTouch = bullOteReady and low <= bullOteTop and high >= bullOteBottom
+bearOteTouch = bearOteReady and high >= bearOteBottom and low <= bearOteTop
+
+rollingPdHigh = ta.highest(high, pdLookback)
+rollingPdLow = ta.lowest(low, pdLookback)
+pdHigh = pdMode == "CRT Range" ? crtHigh : rollingPdHigh
+pdLow = pdMode == "CRT Range" ? crtLow : rollingPdLow
+pdMid = (pdHigh + pdLow) / 2.0
+inDiscount = close <= pdMid
+inPremium = close >= pdMid
+
+// ============================================================
+// 7. Entry and Risk Management
+// ============================================================
+groupRisk = "7. الدخول وإدارة المخاطر"
+riskPct = input.float(1.0, "نسبة المخاطرة من رأس المال %", minval=0.01, maxval=10, step=0.1, group=groupRisk)
+useRiskQty = input.bool(true, "حساب الحجم حسب المخاطرة", group=groupRisk)
+fixedQty = input.float(1.0, "حجم ثابت عند تعطيل المخاطرة", minval=0.001, step=0.001, group=groupRisk)
+minQty = input.float(0.001, "أقل حجم صفقة", minval=0.000001, step=0.001, group=groupRisk)
+maxQty = input.float(100.0, "أقصى حجم صفقة", minval=0.001, step=0.001, group=groupRisk)
+pricePointSize = input.float(0.0001, "حجم النقطة السعرية", minval=0.00000001, step=0.0001, group=groupRisk)
+pointValueUsd = input.float(10.0, "قيمة النقطة بالدولار لكل عقد", minval=0.0001, step=0.1, group=groupRisk)
+
+stopMode = input.string("Sweep extreme", "طريقة وقف الخسارة", options=["Sweep extreme", "Structure", "ATR"], group=groupRisk)
+stopBufferTicks = input.int(3, "هامش وقف الخسارة بعدد Tick", minval=0, group=groupRisk)
+atrLen = input.int(14, "طول ATR", minval=1, group=groupRisk)
+atrMult = input.float(1.5, "مضاعف ATR", minval=0.1, step=0.1, group=groupRisk)
+rr = input.float(2.0, "العائد إلى المخاطرة", minval=0.2, step=0.1, group=groupRisk)
+targetMode = input.string("RR", "طريقة الهدف", options=["RR", "Opposite liquidity", "CRT opposite", "ORB opposite"], group=groupRisk)
+usePartialExit = input.bool(false, "تفعيل خروج جزئي عند 1R", group=groupRisk)
+closeOnOppositeSweep = input.bool(true, "إغلاق عند سحب معاكس", group=groupRisk)
+
+longAllowed = tradeSide == "Both" or tradeSide == "Long only"
+shortAllowed = tradeSide == "Both" or tradeSide == "Short only"
+canOpenNew = strategy.position_size == 0
+var int lastTradeBar = na
+spacingOk = na(lastTradeBar) or bar_index - lastTradeBar >= minBarsBetweenTrades
+
+longPoiTouch = (allowFvgEntry and (entryMode == "Market on POI touch" ? bullFvgTouch : bullFvgCeTouch)) or (allowObEntry and bullObTouch)
+shortPoiTouch = (allowFvgEntry and (entryMode == "Market on POI touch" ? bearFvgTouch : bearFvgCeTouch)) or (allowObEntry and bearObTouch)
+longOteOk = not requireOte or bullOteTouch
+shortOteOk = not requireOte or bearOteTouch
+longPdOk = not requirePd or inDiscount
+shortPdOk = not requirePd or inPremium
+
+longSetup = longAllowed and tradeTimeOk and canOpenNew and spacingOk and longBiasOk and longContextOk and longMssOk and longPoiTouch and longOteOk and longPdOk
+shortSetup = shortAllowed and tradeTimeOk and canOpenNew and spacingOk and shortBiasOk and shortContextOk and shortMssOk and shortPoiTouch and shortOteOk and shortPdOk
+
+atrValue = ta.atr(atrLen)
+stopBuffer = stopBufferTicks * syminfo.mintick
+fallbackLongSweepStop = ta.lowest(low, sweepLookback) - stopBuffer
+fallbackShortSweepStop = ta.highest(high, sweepLookback) + stopBuffer
+structureLongStop = ta.lowest(low, mssLookback) - stopBuffer
+structureShortStop = ta.highest(high, mssLookback) + stopBuffer
+oppositeHighTarget = ta.highest(high[1], sweepLookback)
+oppositeLowTarget = ta.lowest(low[1], sweepLookback)
+
+f_qty(entryPrice, stopPrice) =>
+    riskCash = strategy.equity * riskPct / 100.0
+    riskPoints = math.abs(entryPrice - stopPrice) / pricePointSize
+    rawQty = riskPoints > 0 ? riskCash / (riskPoints * pointValueUsd) : fixedQty
+    math.max(math.min(useRiskQty ? rawQty : fixedQty, maxQty), minQty)
+
+f_longTarget(entryPrice, stopPrice) =>
+    risk = math.max(entryPrice - stopPrice, syminfo.mintick)
+    rrTarget = entryPrice + risk * rr
+    target = rrTarget
+    if targetMode == "Opposite liquidity" and oppositeHighTarget > entryPrice
+        target := oppositeHighTarget
+    if targetMode == "CRT opposite" and crtHigh > entryPrice
+        target := crtHigh
+    if targetMode == "ORB opposite" and orbHigh > entryPrice
+        target := orbHigh
+    target
+
+f_shortTarget(entryPrice, stopPrice) =>
+    risk = math.max(stopPrice - entryPrice, syminfo.mintick)
+    rrTarget = entryPrice - risk * rr
+    target = rrTarget
+    if targetMode == "Opposite liquidity" and oppositeLowTarget < entryPrice
+        target := oppositeLowTarget
+    if targetMode == "CRT opposite" and crtLow < entryPrice
+        target := crtLow
+    if targetMode == "ORB opposite" and orbLow < entryPrice
+        target := orbLow
+    target
+
+var float longStop = na
+var float longTp1 = na
+var float longTp2 = na
+var float shortStop = na
+var float shortTp1 = na
+var float shortTp2 = na
+
+if longSetup
+    longEntry = entryMode == "Limit at FVG CE" and bullFvgActive ? bullFvgCe : close
+    sweepStop = not na(bullSweepLow) ? bullSweepLow - stopBuffer : fallbackLongSweepStop
+    structureStop = structureLongStop
+    atrStop = longEntry - atrValue * atrMult
+    rawStop = stopMode == "Sweep extreme" ? sweepStop : stopMode == "Structure" ? structureStop : atrStop
+    longStop := rawStop < longEntry ? rawStop : atrStop
+    risk = math.max(longEntry - longStop, syminfo.mintick)
+    longTp1 := longEntry + risk
+    longTp2 := f_longTarget(longEntry, longStop)
+    qty = f_qty(longEntry, longStop)
+    if entryMode == "Limit at FVG CE" and bullFvgActive
+        strategy.entry("Long", strategy.long, qty=qty, limit=longEntry, comment="ICT/SMC/CRT Long")
+    else
+        strategy.entry("Long", strategy.long, qty=qty, comment="ICT/SMC/CRT Long")
+    lastTradeBar := bar_index
+
+if shortSetup
+    shortEntry = entryMode == "Limit at FVG CE" and bearFvgActive ? bearFvgCe : close
+    sweepStop = not na(bearSweepHigh) ? bearSweepHigh + stopBuffer : fallbackShortSweepStop
+    structureStop = structureShortStop
+    atrStop = shortEntry + atrValue * atrMult
+    rawStop = stopMode == "Sweep extreme" ? sweepStop : stopMode == "Structure" ? structureStop : atrStop
+    shortStop := rawStop > shortEntry ? rawStop : atrStop
+    risk = math.max(shortStop - shortEntry, syminfo.mintick)
+    shortTp1 := shortEntry - risk
+    shortTp2 := f_shortTarget(shortEntry, shortStop)
+    qty = f_qty(shortEntry, shortStop)
+    if entryMode == "Limit at FVG CE" and bearFvgActive
+        strategy.entry("Short", strategy.short, qty=qty, limit=shortEntry, comment="ICT/SMC/CRT Short")
+    else
+        strategy.entry("Short", strategy.short, qty=qty, comment="ICT/SMC/CRT Short")
+    lastTradeBar := bar_index
+
+if strategy.position_size > 0 and not na(longStop) and not na(longTp2)
+    if usePartialExit
+        strategy.exit("Long 1R", "Long", stop=longStop, limit=longTp1, qty_percent=50)
+        strategy.exit("Long Final", "Long", stop=longStop, limit=longTp2, qty_percent=50)
+    else
+        strategy.exit("Long Exit", "Long", stop=longStop, limit=longTp2)
+
+if strategy.position_size < 0 and not na(shortStop) and not na(shortTp2)
+    if usePartialExit
+        strategy.exit("Short 1R", "Short", stop=shortStop, limit=shortTp1, qty_percent=50)
+        strategy.exit("Short Final", "Short", stop=shortStop, limit=shortTp2, qty_percent=50)
+    else
+        strategy.exit("Short Exit", "Short", stop=shortStop, limit=shortTp2)
+
+if closeOnOppositeSweep and strategy.position_size > 0 and bearSweep
+    strategy.close("Long", comment="Opposite sweep")
+if closeOnOppositeSweep and strategy.position_size < 0 and bullSweep
+    strategy.close("Short", comment="Opposite sweep")
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    longStop := na
+    longTp1 := na
+    longTp2 := na
+    shortStop := na
+    shortTp1 := na
+    shortTp2 := na
+
+// ============================================================
+// 8. Visuals and Alerts
+// ============================================================
+plot(priorHigh, "External Buy-side Liquidity", color=color.new(color.red, 75), style=plot.style_linebr)
+plot(priorLow, "External Sell-side Liquidity", color=color.new(color.green, 75), style=plot.style_linebr)
+plot(useCrtContext ? crtHigh : na, "CRT High", color=color.new(color.orange, 25), style=plot.style_linebr)
+plot(useCrtContext ? crtLow : na, "CRT Low", color=color.new(color.orange, 25), style=plot.style_linebr)
+plot(useCrtContext ? crtMid : na, "CRT 50%", color=color.new(color.orange, 65), style=plot.style_linebr)
+plot(useOrbContext and orbReady ? orbHigh : na, "ORB High", color=color.new(color.blue, 25), style=plot.style_linebr)
+plot(useOrbContext and orbReady ? orbLow : na, "ORB Low", color=color.new(color.blue, 25), style=plot.style_linebr)
+plot(requirePd ? pdMid : na, "Premium / Discount 50%", color=color.new(color.gray, 40), style=plot.style_linebr)
+
+plotshape(bullSweep, "Bullish Liquidity Sweep", shape.triangleup, location.belowbar, color=color.new(color.lime, 0), text="Sweep", textcolor=color.black, size=size.tiny)
+plotshape(bearSweep, "Bearish Liquidity Sweep", shape.triangledown, location.abovebar, color=color.new(color.red, 0), text="Sweep", textcolor=color.white, size=size.tiny)
+plotshape(bullMss, "Bullish MSS", shape.labelup, location.belowbar, color=color.new(color.teal, 0), text="MSS", textcolor=color.white, size=size.tiny)
+plotshape(bearMss, "Bearish MSS", shape.labeldown, location.abovebar, color=color.new(color.maroon, 0), text="MSS", textcolor=color.white, size=size.tiny)
+plotshape(longSetup, "Long Entry Setup", shape.labelup, location.belowbar, color=color.new(color.green, 0), text="BUY", textcolor=color.white, size=size.small)
+plotshape(shortSetup, "Short Entry Setup", shape.labeldown, location.abovebar, color=color.new(color.red, 0), text="SELL", textcolor=color.white, size=size.small)
+
+bgcolor(useSessionFilter and inSession ? color.new(color.teal, 94) : na)
+
+alertcondition(longSetup, "ICT SMC CRT Long", "Long setup from liquidity sweep + MSS + POI")
+alertcondition(shortSetup, "ICT SMC CRT Short", "Short setup from liquidity sweep + MSS + POI")
+alertcondition(bullSweep, "Bullish Liquidity Sweep", "Sell-side liquidity sweep detected")
+alertcondition(bearSweep, "Bearish Liquidity Sweep", "Buy-side liquidity sweep detected")

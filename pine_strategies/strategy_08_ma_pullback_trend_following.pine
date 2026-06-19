@@ -1,0 +1,56 @@
+//@version=6
+strategy("08 - MA Pullback Trend Following", overlay = true, pyramiding = 0, process_orders_on_close = true)
+
+// افتراض برمجي: confirmation candle هي شمعة engulfing بسيطة بعد لمس EMA50، والاتجاه هو ميل EMA200.
+grp01 = "01) الإعدادات العامة"
+grp02 = "02) تفعيل الاتجاهات"
+grp03 = "03) إعدادات الإشارة"
+grp04 = "04) فلاتر التأكيد"
+grp06 = "06) وقف الخسارة والهدف"
+grp07 = "07) التعادل Break Even"
+grp09 = "09) فلتر الجلسة"
+grp10 = "10) العرض والتنبيهات"
+pipSize = input.float(0.0001, "حجم النقطة", step = 0.00001, group = grp01, tooltip = "حجم النقطة المستخدم في حساب الوقف والهدف.")
+enableLong = input.bool(true, "تفعيل الشراء", group = grp02, tooltip = "يسمح بصفقات الشراء مع الاتجاه الصاعد.")
+enableShort = input.bool(true, "تفعيل البيع", group = grp02, tooltip = "يسمح بصفقات البيع مع الاتجاه الهابط.")
+fastEmaLen = input.int(50, "EMA السحب", minval = 1, maxval = 300, group = grp03, tooltip = "المتوسط الذي ينتظر السعر الرجوع إليه للدخول.")
+slowEmaLen = input.int(200, "EMA الاتجاه", minval = 1, maxval = 500, group = grp03, tooltip = "المتوسط الذي يحدد اتجاه التداول العام.")
+trailEmaLen = input.int(20, "EMA التتبع", minval = 1, maxval = 200, group = grp03, tooltip = "متوسط اختياري لمراقبة الخروج أو تتبع الاتجاه بصرياً.")
+rsiLen = input.int(14, "طول RSI", minval = 1, maxval = 100, group = grp04, tooltip = "طول RSI المستخدم في فلتر منطقة 40-60.")
+adxLen = input.int(14, "طول ADX", minval = 1, maxval = 100, group = grp04, tooltip = "طول ADX المستخدم لتجنب السوق المتذبذب.")
+adxMin = input.float(20.0, "أدنى ADX", minval = 1.0, step = 0.5, group = grp04, tooltip = "إذا كان ADX أقل من هذه القيمة يتم تجاهل الإشارة.")
+stopLossPips = input.float(20.0, "وقف الخسارة بالنقاط", minval = 1.0, group = grp06, tooltip = "مسافة وقف الخسارة الافتراضية بالنقاط.")
+rr = input.float(2.0, "نسبة الهدف إلى المخاطرة", minval = 0.5, step = 0.1, group = grp06, tooltip = "الهدف كنسبة من المخاطرة.")
+useBreakEven = input.bool(false, "تفعيل التعادل", group = grp07, tooltip = "ينقل الوقف إلى الدخول بعد ربح محدد.")
+breakEvenAfterPips = input.float(15.0, "تفعيل التعادل بعد", minval = 1.0, group = grp07, tooltip = "عدد النقاط المطلوبة قبل التعادل.")
+useSessionFilter = input.bool(false, "تفعيل فلتر الجلسة", group = grp09, tooltip = "فلتر الجلسة معطل افتراضياً.")
+tradeSession = input.session("0000-2359", "وقت الجلسة", group = grp09, tooltip = "وقت التداول عند تفعيل فلتر الجلسة.")
+showMarks = input.bool(true, "عرض العلامات", group = grp10, tooltip = "يعرض علامات الدخول على الشارت.")
+
+inSession = not useSessionFilter or not na(time(timeframe.period, tradeSession))
+ema50 = ta.ema(close, fastEmaLen)
+ema200 = ta.ema(close, slowEmaLen)
+ema20 = ta.ema(close, trailEmaLen)
+rsi = ta.rsi(close, rsiLen)
+[_, _, adx] = ta.dmi(adxLen, adxLen)
+bullEngulf = close > open and close[1] < open[1] and close > open[1]
+bearEngulf = close < open and close[1] > open[1] and close < open[1]
+pullbackLong = low <= ema50 and close >= ema50
+pullbackShort = high >= ema50 and close <= ema50
+longSignal = enableLong and inSession and ema200 > ema200[1] and close > ema200 and pullbackLong and rsi >= 40 and rsi <= 60 and adx >= adxMin and bullEngulf
+shortSignal = enableShort and inSession and ema200 < ema200[1] and close < ema200 and pullbackShort and rsi >= 40 and rsi <= 60 and adx >= adxMin and bearEngulf
+if longSignal
+    strategy.entry("شراء MA Pullback", strategy.long)
+if shortSignal
+    strategy.entry("بيع MA Pullback", strategy.short)
+longStop = useBreakEven and strategy.position_size > 0 and close >= strategy.position_avg_price + breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price - stopLossPips * pipSize
+shortStop = useBreakEven and strategy.position_size < 0 and close <= strategy.position_avg_price - breakEvenAfterPips * pipSize ? strategy.position_avg_price : strategy.position_avg_price + stopLossPips * pipSize
+strategy.exit("خروج شراء MA Pullback", "شراء MA Pullback", stop = longStop, limit = strategy.position_avg_price + stopLossPips * pipSize * rr)
+strategy.exit("خروج بيع MA Pullback", "بيع MA Pullback", stop = shortStop, limit = strategy.position_avg_price - stopLossPips * pipSize * rr)
+plot(ema50, "EMA 50", color = color.orange)
+plot(ema200, "EMA 200", color = color.blue)
+plot(ema20, "EMA 20", color = color.gray)
+plotshape(showMarks and longSignal, title = "إشارة شراء", style = shape.triangleup, location = location.belowbar, text = "شراء", color = color.lime, textcolor = color.white)
+plotshape(showMarks and shortSignal, title = "إشارة بيع", style = shape.triangledown, location = location.abovebar, text = "بيع", color = color.red, textcolor = color.white)
+alertcondition(longSignal, title = "تنبيه شراء", message = "ظهرت إشارة شراء MA Pullback Trend Following")
+alertcondition(shortSignal, title = "تنبيه بيع", message = "ظهرت إشارة بيع MA Pullback Trend Following")

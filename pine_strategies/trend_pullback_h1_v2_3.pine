@@ -1,0 +1,406 @@
+//@version=6
+// =========================================================================
+// نظام Trend Pullback H1 v2.3 - حل مشكلة العمولة و Win Rate
+//
+// التغييرات الجوهرية عن v2.2:
+//   ✓ حجم صفقة أكبر (50% بدل 10%) → العمولة كنسبة أقل
+//   ✓ R:R = 2.5 بدل 2.0 → تغطية العمولة + ربح صافٍ
+//   ✓ تخفيف Trailing Stop → عدم قطع الأرباح مبكرًا
+//   ✓ شروط أصرم للدخول → Win Rate أعلى
+//   ✓ خيار "إيقاف Trailing" لاختبار TP الثابت
+//   ✓ خيار "تحريك BE فقط" بدل Trailing الكامل
+// =========================================================================
+
+strategy("Trend Pullback H1 v2.3 (Optimized)",
+     overlay              = true,
+     initial_capital      = 10000,
+     default_qty_type     = strategy.percent_of_equity,
+     default_qty_value    = 50,                       // ⬆️ من 10 إلى 50
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.005,                    // ⬇️ من cash إلى % (0.005% = ~0.5 pip سبريد)
+     slippage             = 1,
+     process_orders_on_close = true,
+     pyramiding           = 0)
+
+// =========================================================================
+// 1. الإعدادات
+// =========================================================================
+grp_qty = "1. الكمية والأهداف"
+fixed_qty_pct = input.float(50, "% من Equity للصفقة", minval=10, maxval=100, group=grp_qty, tooltip="50-100% أفضل لتقليل تأثير العمولة")
+rr_ratio = input.float(2.5, "نسبة R:R", minval=1.5, maxval=5.0, step=0.25, group=grp_qty, tooltip="2.5+ يغطّي العمولة")
+
+grp_trend = "2. الاتجاه (H4)"
+htf_period = input.timeframe("240", "فريم الاتجاه", group=grp_trend)
+htf_ema = input.int(50, "EMA H4", minval=20, maxval=200, group=grp_trend)
+htf_slope_bars = input.int(5, "شموع تأكيد ميل الاتجاه", minval=1, maxval=10, group=grp_trend, tooltip="أكبر = اتجاه أقوى = صفقات أقل وأجود")
+
+grp_entry = "3. الدخول (H1)"
+ltf_ema = input.int(20, "EMA H1", minval=10, maxval=50, group=grp_entry)
+pullback_lkbk = input.int(5, "شموع البحث عن Pullback", minval=2, maxval=15, group=grp_entry)
+require_strong_pullback = input.bool(true, "اشتراط ارتداد فعلي قوي", group=grp_entry)
+
+grp_signal = "4. شمعة الإشارة"
+sig_strength = input.string("صارمة", "قوّة الإشارة", options=["متوازنة","صارمة","صارمة جداً"], group=grp_signal, tooltip="صارمة+ تعطي Win Rate أعلى")
+require_above_avg = input.bool(true, "اشتراط شمعة كبيرة (> متوسط)", group=grp_signal)
+
+grp_stop = "5. وقف الخسارة"
+sl_method = input.string("ATR", "طريقة الوقف", options=["ATR","Swing","الأبعد منهما"], group=grp_stop)
+atr_sl_mult = input.float(1.5, "مضاعف ATR", minval=0.5, maxval=4.0, step=0.1, group=grp_stop)
+swing_lkbk = input.int(8, "شموع swing", minval=3, maxval=20, group=grp_stop)
+sl_buffer_pips = input.float(3.0, "سماحية إضافية (pips)", minval=0.0, step=0.5, group=grp_stop)
+sl_min_pips = input.float(8.0, "أدنى وقف (pips)", minval=3.0, group=grp_stop)
+sl_max_pips = input.float(60.0, "أقصى وقف (pips)", minval=20.0, group=grp_stop)
+
+grp_exit = "6. إدارة الخروج (مهم!)"
+exit_strategy = input.string("BE+ عند 1R + TP ثابت", "نمط الخروج", options=["TP ثابت فقط","BE+ عند 1R + TP ثابت","Trailing بعد 1R","جني جزئي 50% + Trailing"], group=grp_exit, tooltip="BE+ يحمي رأس المال بدون قطع الأرباح")
+be_offset_pips = input.float(2.0, "إزاحة BE+ (pips)", minval=0.0, step=0.5, group=grp_exit)
+trail_atr_mult = input.float(2.5, "مسافة Trailing (× ATR)", minval=1.0, step=0.5, group=grp_exit, tooltip="2.5+ لتجنّب قطع الأرباح المبكر")
+
+grp_filter = "7. فلاتر"
+use_session = input.bool(true, "تفعيل جلسة London/NY", group=grp_filter)
+session_time = input.session("0700-1700", "وقت الجلسة UTC", group=grp_filter)
+use_atr_filter = input.bool(true, "فلتر التقلّب", group=grp_filter)
+min_atr_pips = input.float(10.0, "أدنى ATR (pips)", minval=3.0, group=grp_filter)
+max_atr_pips = input.float(50.0, "أقصى ATR (pips)", minval=20.0, group=grp_filter)
+avoid_friday_evening = input.bool(true, "تجنّب مساء الجمعة", group=grp_filter)
+friday_close_hour = input.int(18, "ساعة إغلاق الجمعة UTC", group=grp_filter)
+
+grp_safety = "8. حماية رأس المال"
+use_safety = input.bool(true, "تفعيل الحماية", group=grp_safety)
+max_consec_losses = input.int(4, "إيقاف بعد X خسائر متتالية", minval=2, group=grp_safety)
+cooldown_bars = input.int(3, "شموع تبريد بعد إغلاق صفقة", minval=0, group=grp_safety)
+
+grp_dash = "9. اللوحة"
+show_dash = input.bool(true, "إظهار اللوحة", group=grp_dash)
+
+// =========================================================================
+// 2. الحسابات
+// =========================================================================
+pip_size = 0.0001
+atr14 = ta.atr(14)
+m_ema = ta.ema(close, ltf_ema)
+avg_range = ta.sma(high - low, 20)
+
+htf_ema_val = request.security(syminfo.tickerid, htf_period, ta.ema(close, htf_ema), lookahead=barmerge.lookahead_off)
+htf_close = request.security(syminfo.tickerid, htf_period, close, lookahead=barmerge.lookahead_off)
+
+// =========================================================================
+// 3. الاتجاه H4
+// =========================================================================
+htf_ema_rising = not na(htf_ema_val[htf_slope_bars]) and htf_ema_val > htf_ema_val[htf_slope_bars]
+htf_ema_falling = not na(htf_ema_val[htf_slope_bars]) and htf_ema_val < htf_ema_val[htf_slope_bars]
+
+trend_up = not na(htf_ema_val) and not na(htf_close) and htf_close > htf_ema_val and htf_ema_rising
+trend_down = not na(htf_ema_val) and not na(htf_close) and htf_close < htf_ema_val and htf_ema_falling
+
+// =========================================================================
+// 4. كشف Pullback
+// =========================================================================
+touched_ema = false
+for i = 1 to pullback_lkbk
+    if not na(m_ema[i]) and low[i] <= m_ema[i] and high[i] >= m_ema[i]
+        touched_ema := true
+
+near_ema = math.abs(close - m_ema) <= atr14 * 0.7
+pullback_ok = touched_ema or near_ema
+
+// تأكيد ارتداد
+price_was_below_ema = false
+price_was_above_ema = false
+for i = 1 to pullback_lkbk
+    if low[i] <= m_ema[i]
+        price_was_below_ema := true
+    if high[i] >= m_ema[i]
+        price_was_above_ema := true
+
+valid_long_pullback = require_strong_pullback ? (price_was_below_ema and close > m_ema and close > m_ema[1]) : (price_was_below_ema and close > m_ema)
+valid_short_pullback = require_strong_pullback ? (price_was_above_ema and close < m_ema and close < m_ema[1]) : (price_was_above_ema and close < m_ema)
+
+// =========================================================================
+// 5. شموع التأكيد
+// =========================================================================
+body = math.abs(close - open)
+upper_wick = high - math.max(close, open)
+lower_wick = math.min(close, open) - low
+candle_range = high - low
+candle_mid = (high + low) / 2
+
+big_enough = require_above_avg ? candle_range > avg_range * 0.8 : true
+close_in_upper_half = close > candle_mid
+close_in_lower_half = close < candle_mid
+
+// متوازنة
+bal_bull_pin = lower_wick > body * 1.5 and lower_wick > upper_wick * 2 and close > open
+bal_bear_pin = upper_wick > body * 1.5 and upper_wick > lower_wick * 2 and close < open
+bal_bull_eng = close > open and close[1] < open[1] and close >= open[1] and body > body[1]
+bal_bear_eng = close < open and close[1] > open[1] and close <= open[1] and body > body[1]
+
+// صارمة
+str_bull_pin = lower_wick > body * 2 and lower_wick > upper_wick * 3 and close > open
+str_bear_pin = upper_wick > body * 2 and upper_wick > lower_wick * 3 and close < open
+str_bull_eng = close > open and close[1] < open[1] and close >= high[1] and open <= low[1]
+str_bear_eng = close < open and close[1] > open[1] and close <= low[1] and open >= high[1]
+
+// صارمة جداً (ذيل ضخم + شمعة قوية)
+vstr_bull_pin = lower_wick > body * 3 and lower_wick > upper_wick * 4 and close > open and lower_wick > atr14 * 0.5
+vstr_bear_pin = upper_wick > body * 3 and upper_wick > lower_wick * 4 and close < open and upper_wick > atr14 * 0.5
+vstr_bull_eng = close > open and close[1] < open[1] and close > high[1] and body > body[1] * 1.5
+vstr_bear_eng = close < open and close[1] > open[1] and close < low[1] and body > body[1] * 1.5
+
+bull_signal = sig_strength == "متوازنة" ? (bal_bull_pin or bal_bull_eng) : sig_strength == "صارمة" ? (str_bull_pin or str_bull_eng) : (vstr_bull_pin or vstr_bull_eng)
+
+bear_signal = sig_strength == "متوازنة" ? (bal_bear_pin or bal_bear_eng) : sig_strength == "صارمة" ? (str_bear_pin or str_bear_eng) : (vstr_bear_pin or vstr_bear_eng)
+
+// تأكيد إغلاق صحيح
+bull_signal_final = bull_signal and big_enough and close_in_upper_half
+bear_signal_final = bear_signal and big_enough and close_in_lower_half
+
+// =========================================================================
+// 6. الفلاتر
+// =========================================================================
+in_session = use_session ? not na(time(timeframe.period, session_time)) : true
+atr_pips = atr14 / pip_size
+atr_ok = use_atr_filter ? (atr_pips >= min_atr_pips and atr_pips <= max_atr_pips) : true
+
+is_friday = dayofweek == dayofweek.friday
+friday_block = avoid_friday_evening and is_friday and hour >= friday_close_hour
+
+// حماية رأس المال
+var int consec_losses = 0
+var int last_close_bar = 0
+var int prev_closed = 0
+
+if strategy.closedtrades > prev_closed
+    last_pl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    consec_losses := last_pl < 0 ? consec_losses + 1 : 0
+    last_close_bar := bar_index
+    prev_closed := strategy.closedtrades
+
+blocked_losses = use_safety and consec_losses >= max_consec_losses
+blocked_cooldown = use_safety and (bar_index - last_close_bar) < cooldown_bars and strategy.closedtrades > 0
+
+trading_blocked = blocked_losses or blocked_cooldown or friday_block
+
+// =========================================================================
+// 7. حساب الوقف
+// =========================================================================
+swing_low = ta.lowest(low, swing_lkbk)[1]
+swing_high = ta.highest(high, swing_lkbk)[1]
+
+sl_long_atr = close - (atr14 * atr_sl_mult)
+sl_short_atr = close + (atr14 * atr_sl_mult)
+sl_long_swing = swing_low - (sl_buffer_pips * pip_size)
+sl_short_swing = swing_high + (sl_buffer_pips * pip_size)
+
+sl_long_final = sl_method == "ATR" ? sl_long_atr : sl_method == "Swing" ? sl_long_swing : math.min(sl_long_atr, sl_long_swing)
+sl_short_final = sl_method == "ATR" ? sl_short_atr : sl_method == "Swing" ? sl_short_swing : math.max(sl_short_atr, sl_short_swing)
+
+risk_long = close - sl_long_final
+risk_short = sl_short_final - close
+risk_long_pips = risk_long / pip_size
+risk_short_pips = risk_short / pip_size
+
+valid_risk_long = risk_long > 0 and risk_long_pips >= sl_min_pips and risk_long_pips <= sl_max_pips
+valid_risk_short = risk_short > 0 and risk_short_pips >= sl_min_pips and risk_short_pips <= sl_max_pips
+
+// =========================================================================
+// 8. شروط الدخول
+// =========================================================================
+long_condition = trend_up and pullback_ok and valid_long_pullback and bull_signal_final and in_session and atr_ok and valid_risk_long and not trading_blocked
+
+short_condition = trend_down and pullback_ok and valid_short_pullback and bear_signal_final and in_session and atr_ok and valid_risk_short and not trading_blocked
+
+// =========================================================================
+// 9. تنفيذ الصفقات
+// =========================================================================
+var float entry_price = na
+var float sl_price = na
+var float tp_price = na
+var float risk_per_unit = na
+var bool trail_activated = false
+var bool partial_done = false
+var bool be_moved = false
+
+if long_condition and strategy.position_size == 0
+    entry_price := close
+    sl_price := sl_long_final
+    risk_per_unit := risk_long
+    tp_price := entry_price + (risk_per_unit * rr_ratio)
+    trail_activated := false
+    partial_done := false
+    be_moved := false
+    strategy.entry("Long", strategy.long)
+
+if short_condition and strategy.position_size == 0
+    entry_price := close
+    sl_price := sl_short_final
+    risk_per_unit := risk_short
+    tp_price := entry_price - (risk_per_unit * rr_ratio)
+    trail_activated := false
+    partial_done := false
+    be_moved := false
+    strategy.entry("Short", strategy.short)
+
+// =========================================================================
+// 10. إدارة الصفقات (محسّنة!)
+// =========================================================================
+if strategy.position_size > 0
+    reached_1r = high >= entry_price + risk_per_unit
+
+    current_sl = sl_price
+
+    if exit_strategy == "TP ثابت فقط"
+        // لا تغيير - استخدم SL الأصلي و TP
+        strategy.exit("Exit Long", "Long", stop=sl_price, limit=tp_price)
+
+    else if exit_strategy == "BE+ عند 1R + TP ثابت"
+        if reached_1r and not be_moved
+            be_moved := true
+        if be_moved
+            current_sl := entry_price + (be_offset_pips * pip_size)
+        strategy.exit("Exit Long", "Long", stop=current_sl, limit=tp_price)
+
+    else if exit_strategy == "Trailing بعد 1R"
+        if reached_1r
+            trail_activated := true
+        if trail_activated
+            new_sl = math.max(entry_price + pip_size, close - (atr14 * trail_atr_mult))
+            strategy.exit("Exit Long", "Long", stop=new_sl, limit=tp_price)
+        else
+            strategy.exit("Exit Long", "Long", stop=sl_price, limit=tp_price)
+
+    else  // جني جزئي 50% + Trailing
+        if reached_1r and not partial_done
+            strategy.exit("جزئي", "Long", qty_percent=50, limit=entry_price + risk_per_unit)
+            partial_done := true
+            trail_activated := true
+        if trail_activated
+            new_sl = math.max(entry_price + pip_size, close - (atr14 * trail_atr_mult))
+            strategy.exit("Exit Long", "Long", stop=new_sl, limit=tp_price)
+        else
+            strategy.exit("Exit Long", "Long", stop=sl_price, limit=tp_price)
+
+if strategy.position_size < 0
+    reached_1r = low <= entry_price - risk_per_unit
+
+    current_sl = sl_price
+
+    if exit_strategy == "TP ثابت فقط"
+        strategy.exit("Exit Short", "Short", stop=sl_price, limit=tp_price)
+
+    else if exit_strategy == "BE+ عند 1R + TP ثابت"
+        if reached_1r and not be_moved
+            be_moved := true
+        if be_moved
+            current_sl := entry_price - (be_offset_pips * pip_size)
+        strategy.exit("Exit Short", "Short", stop=current_sl, limit=tp_price)
+
+    else if exit_strategy == "Trailing بعد 1R"
+        if reached_1r
+            trail_activated := true
+        if trail_activated
+            new_sl = math.min(entry_price - pip_size, close + (atr14 * trail_atr_mult))
+            strategy.exit("Exit Short", "Short", stop=new_sl, limit=tp_price)
+        else
+            strategy.exit("Exit Short", "Short", stop=sl_price, limit=tp_price)
+
+    else  // جني جزئي 50% + Trailing
+        if reached_1r and not partial_done
+            strategy.exit("جزئي", "Short", qty_percent=50, limit=entry_price - risk_per_unit)
+            partial_done := true
+            trail_activated := true
+        if trail_activated
+            new_sl = math.min(entry_price - pip_size, close + (atr14 * trail_atr_mult))
+            strategy.exit("Exit Short", "Short", stop=new_sl, limit=tp_price)
+        else
+            strategy.exit("Exit Short", "Short", stop=sl_price, limit=tp_price)
+
+// =========================================================================
+// 11. الرسومات
+// =========================================================================
+plot(m_ema, "EMA H1", color=color.blue, linewidth=2)
+plot(htf_ema_val, "EMA H4", color=color.orange, linewidth=3)
+
+plotshape(long_condition and strategy.position_size == 0, "Long", shape.triangleup, location.belowbar, color.lime, size=size.normal)
+plotshape(short_condition and strategy.position_size == 0, "Short", shape.triangledown, location.abovebar, color.red, size=size.normal)
+
+plot(strategy.position_size != 0 ? entry_price : na, "Entry", color.yellow, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? sl_price : na, "SL", color.red, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? tp_price : na, "TP", color.green, 1, plot.style_linebr)
+
+bgcolor(in_session and use_session ? color.new(color.blue, 95) : na)
+
+// =========================================================================
+// 12. اللوحة
+// =========================================================================
+total_trades = strategy.closedtrades
+win_trades = strategy.wintrades
+win_rate = total_trades > 0 ? (win_trades / total_trades) * 100 : 0.0
+profit_factor = strategy.grossloss != 0 ? math.abs(strategy.grossprofit / strategy.grossloss) : 0.0
+avg_win = win_trades > 0 ? strategy.grossprofit / win_trades : 0.0
+avg_loss = (total_trades - win_trades) > 0 ? math.abs(strategy.grossloss) / (total_trades - win_trades) : 0.0
+expectancy = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
+
+if show_dash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 19, bgcolor=color.new(color.black, 80), border_width=1)
+
+    table.cell(dash, 0, 0, "🐺 H1 v2.3 Optimized", bgcolor=color.new(color.blue, 30), text_color=color.white)
+    table.cell(dash, 1, 0, "EURUSD H1", bgcolor=color.new(color.blue, 30), text_color=color.yellow)
+
+    table.cell(dash, 0, 1, "💰 Equity", text_color=color.white)
+    table.cell(dash, 1, 1, "$" + str.tostring(strategy.equity, "#.00"), text_color=color.white)
+
+    table.cell(dash, 0, 2, "📊 Net Profit", text_color=color.white)
+    np = strategy.netprofit
+    table.cell(dash, 1, 2, "$" + str.tostring(np, "#.00") + " (" + str.tostring(np/strategy.initial_capital*100, "#.1") + "%)", text_color = np > 0 ? color.lime : color.red)
+
+    table.cell(dash, 0, 3, "🎯 Win Rate", text_color=color.white)
+    table.cell(dash, 1, 3, str.tostring(win_rate, "#.0") + "% (" + str.tostring(total_trades) + ")", text_color = win_rate >= 40 ? color.lime : (win_rate >= 32 ? color.orange : color.red))
+
+    table.cell(dash, 0, 4, "💎 Profit Factor", text_color=color.white)
+    table.cell(dash, 1, 4, str.tostring(profit_factor, "#.00"), text_color = profit_factor > 1.3 ? color.lime : (profit_factor > 1 ? color.orange : color.red))
+
+    table.cell(dash, 0, 5, "📈 Expectancy/trade", text_color=color.white)
+    table.cell(dash, 1, 5, "$" + str.tostring(expectancy, "#.00"), text_color = expectancy > 0 ? color.lime : color.red)
+
+    table.cell(dash, 0, 6, "✅ Avg Win", text_color=color.white)
+    table.cell(dash, 1, 6, "$" + str.tostring(avg_win, "#.00"), text_color=color.lime)
+
+    table.cell(dash, 0, 7, "❌ Avg Loss", text_color=color.white)
+    table.cell(dash, 1, 7, "$" + str.tostring(avg_loss, "#.00"), text_color=color.red)
+
+    table.cell(dash, 0, 8, "📉 Max DD", text_color=color.white)
+    table.cell(dash, 1, 8, "$" + str.tostring(strategy.max_drawdown, "#.00") + " (" + str.tostring(strategy.max_drawdown/strategy.initial_capital*100, "#.1") + "%)", text_color=color.orange)
+
+    // الإعدادات الحالية
+    table.cell(dash, 0, 9, "⚙️ نمط الخروج", text_color=color.white)
+    table.cell(dash, 1, 9, exit_strategy, text_color=color.yellow)
+
+    table.cell(dash, 0, 10, "📐 R:R", text_color=color.white)
+    table.cell(dash, 1, 10, str.tostring(rr_ratio), text_color=color.yellow)
+
+    table.cell(dash, 0, 11, "🔬 قوّة الإشارة", text_color=color.white)
+    table.cell(dash, 1, 11, sig_strength, text_color=color.yellow)
+
+    // الحالة
+    table.cell(dash, 0, 12, "🧭 Trend H4", text_color=color.white)
+    table.cell(dash, 1, 12, trend_up ? "🟢 صاعد" : (trend_down ? "🔴 هابط" : "⚪"), text_color = trend_up ? color.lime : (trend_down ? color.red : color.gray))
+
+    table.cell(dash, 0, 13, "📍 Pullback", text_color=color.white)
+    table.cell(dash, 1, 13, pullback_ok ? "✅" : "❌", text_color = pullback_ok ? color.lime : color.red)
+
+    table.cell(dash, 0, 14, "🕯️ شمعة قويّة", text_color=color.white)
+    table.cell(dash, 1, 14, bull_signal_final ? "🟢" : (bear_signal_final ? "🔴" : "—"), text_color = bull_signal_final ? color.lime : (bear_signal_final ? color.red : color.gray))
+
+    table.cell(dash, 0, 15, "📊 ATR", text_color=color.white)
+    table.cell(dash, 1, 15, str.tostring(atr_pips, "#.1") + " pips", text_color = atr_ok ? color.lime : color.red)
+
+    table.cell(dash, 0, 16, "❌ خسائر متتالية", text_color=color.white)
+    table.cell(dash, 1, 16, str.tostring(consec_losses) + "/" + str.tostring(max_consec_losses), text_color = blocked_losses ? color.red : color.lime)
+
+    table.cell(dash, 0, 17, "🚦 الحالة", text_color=color.white, bgcolor=color.new(color.gray, 70))
+    state_text = trading_blocked ? "🛑 محظور" : (long_condition ? "🟢 شراء!" : (short_condition ? "🔴 بيع!" : "⏳ انتظار"))
+    table.cell(dash, 1, 17, state_text, text_color = trading_blocked ? color.red : (long_condition ? color.lime : (short_condition ? color.red : color.gray)), bgcolor=color.new(color.gray, 70))
+
+    table.cell(dash, 0, 18, "📦 Position", text_color=color.white)
+    table.cell(dash, 1, 18, strategy.position_size > 0 ? "🟢 Long" : (strategy.position_size < 0 ? "🔴 Short" : "—"), text_color = strategy.position_size > 0 ? color.lime : (strategy.position_size < 0 ? color.red : color.gray))

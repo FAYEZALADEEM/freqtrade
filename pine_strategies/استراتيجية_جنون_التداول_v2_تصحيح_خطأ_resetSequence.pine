@@ -1,0 +1,852 @@
+//@version=6
+strategy(
+     title="استراتيجية جنون التداول v2 — Bollinger + Stochastic Slow — Pro Edition",
+     shorttitle="Crazy BB Slow Stoch v2",
+     overlay=true,
+     initial_capital=10000,
+     currency=currency.USD,
+     pyramiding=0,
+     calc_on_every_tick=false,
+     process_orders_on_close=true,
+     default_qty_type=strategy.fixed,
+     default_qty_value=50000,
+     margin_long=0.25,
+     margin_short=0.25,
+     commission_type=strategy.commission.cash_per_order,
+     commission_value=5.0,
+     slippage=2
+)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 1) إعدادات الاختبار والتنفيذ
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+allowLong  = input.bool(true,  "السماح بصفقات الشراء", group="إعدادات الاختبار")
+allowShort = input.bool(true,  "السماح بصفقات البيع",   group="إعدادات الاختبار")
+
+useRiskSizing = input.bool(false, "تفعيل تحديد الحجم من المخاطرة %",
+     group="إعدادات الاختبار",
+     tooltip="عند التفعيل: يُحسب الحجم تلقائيًا ليبقى الخسارة بنسبة ثابتة من رأس المال. عند التعطيل: يستخدم الحجم الثابت أدناه.")
+
+riskPercent = input.float(0.5, "نسبة المخاطرة لكل صفقة %",
+     minval=0.01, maxval=10.0, step=0.1,
+     group="إعدادات الاختبار",
+     tooltip="موصى به لتحديات FTMO: 0.25% - 0.75%")
+
+orderQty = input.float(50000, "حجم الصفقة الثابت (وحدات)",
+     minval=1, step=1000,
+     group="إعدادات الاختبار",
+     tooltip="يُستخدم فقط عند تعطيل خيار المخاطرة %. على EURUSD: 50000 وحدة ≈ 5 دولار/نقطة.")
+
+pipOverride = input.float(0.0001, "حجم النقطة Pip",
+     minval=0.00001, step=0.00001,
+     group="إعدادات الاختبار",
+     tooltip="EURUSD = 0.0001 | أزواج JPY = 0.01 | XAUUSD = 0.1")
+
+pipSize = str.contains(syminfo.ticker, "JPY") ? 0.01 : pipOverride
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 2) إعدادات البولينجر
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+bbLength       = input.int(20, "طول البولينجر", minval=1, group="البولينجر")
+innerDeviation = input.float(1.0, "انحراف الداخلي", minval=0.1, step=0.1, group="البولينجر")
+outerDeviation = input.float(2.0, "انحراف الخارجي", minval=0.1, step=0.1, group="البولينجر")
+
+priceTriggerMode = input.string("لمس أو كسر الداخلي",
+     "شرط وصول السعر للمنطقة",
+     options=["لمس أو كسر الداخلي", "كسر الداخلي فقط", "لمس الخارجي فقط"],
+     group="البولينجر")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 3) إعدادات Stochastic Slow
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+stochLength = input.int(30, "Stoch Length",        minval=1, group="Stochastic Slow")
+smoothK     = input.int(5,  "Smoothing Length 1",  minval=1, group="Stochastic Slow")
+smoothD     = input.int(5,  "Smoothing Length 2",  minval=1, group="Stochastic Slow")
+
+oversold   = input.float(20.0, "Oversold",   minval=0, maxval=100, step=1, group="Stochastic Slow")
+overbought = input.float(80.0, "Overbought", minval=0, maxval=100, step=1, group="Stochastic Slow")
+
+extremeMemoryMode = input.string("أحد الخطين لمس التشبع",
+     "شرط تسجيل التشبع",
+     options=["أحد الخطين لمس التشبع", "كلا الخطين داخل التشبع"],
+     group="Stochastic Slow")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 4) منطق بناء الإشارة
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+signalLogic = input.string("تسلسل: تشبع ثم تقاطع ثم عودة",
+     "طريقة بناء الإشارة",
+     options=[
+         "تسلسل: تشبع ثم تقاطع ثم عودة",
+         "مرن: اكتمال الشروط بأي ترتيب",
+         "صارم: نفس الشمعة فقط"
+     ],
+     group="منطق الدخول")
+
+setupWindowBars = input.int(6, "نافذة اكتمال الفرصة (شموع)",
+     minval=1, maxval=50, group="منطق الدخول",
+     tooltip="على H4: 6 شموع ≈ 24 ساعة")
+
+requireReturnCross = input.bool(true,
+     "اشتراط عبور الإغلاق عائدًا داخل الداخلي",
+     group="منطق الدخول")
+
+strictBandBeforeExtreme = input.bool(false,
+     "تشديد: لمس الباند يجب أن يسبق التشبع",
+     group="منطق الدخول",
+     tooltip="عند التفعيل: السعر يجب أن يلمس الباند قبل أو متزامنًا مع تشبع الستوكاستيك (تسلسل أكثر صرامة).")
+
+renewBandOnDeeperTouch = input.bool(true,
+     "تحديث الوصول عند لمس أعمق",
+     group="منطق الدخول",
+     tooltip="عند التفعيل: إذا لمس السعر الباند بشكل أعمق خلال النافذة، يُحدّث المرجع. مفيد لالتقاط أقوى نقطة رفض.")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 5) إدارة الصفقة - الوقف والهدف
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+slBufferPips = input.float(2.0, "إضافة خلف القمة/القاع بالنقاط",
+     minval=0, step=0.1, group="إدارة الصفقة - الوقف")
+
+useHybridStop = input.bool(true, "وقف هجين (فتيل / خارجي / أدنى مسافة)",
+     group="إدارة الصفقة - الوقف",
+     tooltip="عند التفعيل: الوقف = أبعد نقطة بين فتيل الشمعة، الباند الخارجي، والحد الأدنى. يحمي من RR وهمي ويضع الوقف خلف منطقة الرفض الفعلية.")
+
+minStopPips = input.float(8.0, "أدنى مسافة وقف بالنقاط",
+     minval=1, step=0.5, group="إدارة الصفقة - الوقف",
+     tooltip="يمنع الصفقات بوقف صغير جدًا الذي يولّد RR مضخّم.")
+
+maxStopPips = input.float(80.0, "أقصى مسافة وقف بالنقاط (يلغي الصفقة فوقها)",
+     minval=10, step=5, group="إدارة الصفقة - الوقف",
+     tooltip="حماية: لا تدخل صفقات بوقف ضخم. اضبطه حسب فريم وزوج التداول.")
+
+exitMode = input.string("وقف + تقاطع معاكس",
+     "طريقة الخروج",
+     options=[
+         "وقف + تقاطع معاكس",
+         "وقف + هدف RR",
+         "وقف + هدف RR أو تقاطع معاكس"
+     ],
+     group="إدارة الصفقة - الخروج")
+
+riskReward = input.float(1.5, "نسبة الهدف إلى المخاطرة RR",
+     minval=0.1, step=0.1, group="إدارة الصفقة - الخروج")
+
+useBreakeven = input.bool(false, "تفعيل تعديل الوقف للتعادل عند 1R",
+     group="إدارة الصفقة - الخروج",
+     tooltip="ينقل الوقف إلى نقطة الدخول عند تحقيق ربح 1R.")
+
+useTimeExit = input.bool(false, "تفعيل الخروج الزمني", group="إدارة الصفقة - الخروج")
+maxHoldBars = input.int(48, "الخروج بعد عدد شموع", minval=1, group="إدارة الصفقة - الخروج")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 6) فلاتر إضافية
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+useTrendFilter = input.bool(false, "فلتر اتجاه HTF (EMA على فريم أعلى)",
+     group="فلاتر إضافية",
+     tooltip="شراء فقط فوق EMA و بيع فقط تحته على الفريم المختار.")
+
+htfTimeframe = input.timeframe("D", "فريم فلتر الاتجاه", group="فلاتر إضافية")
+htfEmaLen    = input.int(200, "طول EMA على HTF", minval=10, group="فلاتر إضافية")
+
+useSessionFilter = input.bool(false, "فلتر جلسة التداول",
+     group="فلاتر إضافية",
+     tooltip="EURUSD/GBPUSD: لندن + نيويورك (07:00-21:00 UTC). تجنّب جلسة آسيا الضعيفة.")
+
+sessionSpec = input.session("0700-2100", "نطاق الجلسة (UTC)", group="فلاتر إضافية")
+
+useVolumeFilter = input.bool(false, "فلتر حجم على شمعة العودة (VSA)",
+     group="فلاتر إضافية",
+     tooltip="يشترط حجم أعلى من المتوسط على شمعة العودة - مفيد لتأكيد العرض/الطلب.")
+
+volMultiplier = input.float(1.2, "مضاعف الحجم على المتوسط",
+     minval=0.5, step=0.1, group="فلاتر إضافية")
+
+volAvgLength = input.int(20, "طول متوسط الحجم", minval=5, group="فلاتر إضافية")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 7) حماية رأس المال (FTMO-style)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+useFtmoProtection = input.bool(false, "تفعيل حماية FTMO",
+     group="حماية رأس المال",
+     tooltip="يوقف التداول تلقائيًا عند تجاوز حد الخسارة اليومية أو الإجمالية.")
+
+maxDailyLossPct = input.float(4.0, "أقصى خسارة يومية %",
+     minval=0.5, step=0.5, group="حماية رأس المال")
+
+maxTotalDDPct = input.float(8.0, "أقصى تراجع إجمالي %",
+     minval=1.0, step=0.5, group="حماية رأس المال")
+
+maxDailyTrades = input.int(0, "أقصى صفقات في اليوم (0 = بدون حد)",
+     minval=0, group="حماية رأس المال")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 8) إعدادات الرسم
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+showBands   = input.bool(true,  "إظهار البولينجر",                group="الرسم")
+showBasis   = input.bool(true,  "إظهار المتوسط",                  group="الرسم")
+showSignals = input.bool(true,  "إظهار الدخول الفعلي",            group="الرسم")
+showStages  = input.bool(false, "إظهار مراحل تكوّن الفرصة",       group="الرسم")
+showOrders  = input.bool(true,  "إظهار الوقف والهدف",             group="الرسم")
+showHtfEma  = input.bool(false, "إظهار EMA على HTF",              group="الرسم")
+showPanel   = input.bool(true,  "إظهار لوحة المعلومات",           group="الرسم")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 9) حسابات المؤشرات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+basis     = ta.sma(close, bbLength)
+deviation = ta.stdev(close, bbLength)
+
+upperInner = basis + deviation * innerDeviation
+lowerInner = basis - deviation * innerDeviation
+upperOuter = basis + deviation * outerDeviation
+lowerOuter = basis - deviation * outerDeviation
+
+rawK  = ta.stoch(close, high, low, stochLength)
+slowK = ta.sma(rawK,  smoothK)
+slowD = ta.sma(slowK, smoothD)
+
+crossUp   = ta.crossover(slowK, slowD)
+crossDown = ta.crossunder(slowK, slowD)
+
+// HTF EMA للفلتر (مع تعطيل النظر المستقبلي)
+htfEma = request.security(syminfo.tickerid, htfTimeframe,
+     ta.ema(close, htfEmaLen),
+     lookahead=barmerge.lookahead_off)
+
+// متوسط الحجم
+volAvg = ta.sma(volume, volAvgLength)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 10) تقييم الفلاتر
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+trendOkLong  = not useTrendFilter or close > htfEma
+trendOkShort = not useTrendFilter or close < htfEma
+
+inSession = not useSessionFilter or
+     not na(time(timeframe.period, sessionSpec, "UTC"))
+
+volOk = not useVolumeFilter or volume > volAvg * volMultiplier
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 11) تتبع حالة رأس المال للحماية
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var float dayStartEquity = strategy.initial_capital
+var float peakEquity     = strategy.initial_capital
+var int   dailyTradeCount = 0
+var int   lastDayCounted  = na
+
+currentDay = dayofmonth + 100 * month + 10000 * year
+newDay     = na(lastDayCounted) or currentDay != lastDayCounted
+
+if newDay
+    dayStartEquity := strategy.equity
+    dailyTradeCount := 0
+    lastDayCounted := currentDay
+
+peakEquity := math.max(peakEquity, strategy.equity)
+
+dailyPnL     = strategy.equity - dayStartEquity
+dailyLossPct = dayStartEquity > 0 ? math.max(0.0, -dailyPnL / dayStartEquity * 100) : 0.0
+totalDDPct   = peakEquity > 0 ? (peakEquity - strategy.equity) / peakEquity * 100 : 0.0
+
+blockToday = useFtmoProtection and (dailyLossPct >= maxDailyLossPct or
+     (maxDailyTrades > 0 and dailyTradeCount >= maxDailyTrades))
+
+blockAll = useFtmoProtection and totalDDPct >= maxTotalDDPct
+
+riskGuardOk = not blockToday and not blockAll
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 12) أحداث الإشارة
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+buyExtremeEvent = extremeMemoryMode == "كلا الخطين داخل التشبع" ?
+     (slowK <= oversold and slowD <= oversold) :
+     (math.min(slowK, slowD) <= oversold)
+
+sellExtremeEvent = extremeMemoryMode == "كلا الخطين داخل التشبع" ?
+     (slowK >= overbought and slowD >= overbought) :
+     (math.max(slowK, slowD) >= overbought)
+
+buyCrossEvent  = crossUp
+sellCrossEvent = crossDown
+
+exitLongByCross  = crossDown
+exitShortByCross = crossUp
+
+buyBandEvent = switch priceTriggerMode
+    "لمس الخارجي فقط"  => low <= lowerOuter
+    "كسر الداخلي فقط" => low <  lowerInner
+    =>                     low <= lowerInner
+
+sellBandEvent = switch priceTriggerMode
+    "لمس الخارجي فقط"  => high >= upperOuter
+    "كسر الداخلي فقط" => high >  upperInner
+    =>                     high >= upperInner
+
+buyReturnEvent = requireReturnCross ?
+     ta.crossover(close, lowerInner) :
+     (low <= lowerInner and close > lowerInner)
+
+sellReturnEvent = requireReturnCross ?
+     ta.crossunder(close, upperInner) :
+     (high >= upperInner and close < upperInner)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 13) ذاكرة تسلسل الفرصة
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+flat = strategy.position_size == 0
+
+ready = not na(basis) and not na(upperInner) and not na(lowerInner) and
+     not na(slowK) and not na(slowD)
+
+var int   buyBandBar     = na
+var int   buyExtremeBar  = na
+var int   buyCrossBar    = na
+var int   buyReturnBar   = na
+var float buyBandLow     = na
+
+var int   sellBandBar    = na
+var int   sellExtremeBar = na
+var int   sellCrossBar   = na
+var int   sellReturnBar  = na
+var float sellBandHigh   = na
+
+isFresh(int eventBar) =>
+    not na(eventBar) and bar_index - eventBar <= setupWindowBars
+
+// تحديث وصول البولينجر (مع خيار تحديث عند لمس أعمق)
+if flat and ready and buyBandEvent
+    if not isFresh(buyBandBar)
+        buyBandBar := bar_index
+        buyBandLow := low
+    else if renewBandOnDeeperTouch and low < buyBandLow
+        buyBandBar := bar_index
+        buyBandLow := low
+
+if flat and ready and sellBandEvent
+    if not isFresh(sellBandBar)
+        sellBandBar := bar_index
+        sellBandHigh := high
+    else if renewBandOnDeeperTouch and high > sellBandHigh
+        sellBandBar := bar_index
+        sellBandHigh := high
+
+// تشبع: نحتفظ بأول حصول داخل النافذة (يحدد بداية التسلسل)
+if flat and ready and buyExtremeEvent
+    if not isFresh(buyExtremeBar)
+        buyExtremeBar := bar_index
+
+if flat and ready and sellExtremeEvent
+    if not isFresh(sellExtremeBar)
+        sellExtremeBar := bar_index
+
+// التقاطع: نحتفظ بآخر تقاطع (المرجع للعودة)
+if flat and ready and buyCrossEvent
+    buyCrossBar := bar_index
+
+if flat and ready and sellCrossEvent
+    sellCrossBar := bar_index
+
+// شمعة العودة
+if flat and ready and buyReturnEvent
+    buyReturnBar := bar_index
+
+if flat and ready and sellReturnEvent
+    sellReturnBar := bar_index
+
+buyAllFresh = isFresh(buyBandBar) and isFresh(buyExtremeBar) and
+     isFresh(buyCrossBar) and isFresh(buyReturnBar)
+
+sellAllFresh = isFresh(sellBandBar) and isFresh(sellExtremeBar) and
+     isFresh(sellCrossBar) and isFresh(sellReturnBar)
+
+// شرط الترتيب الأساسي: تشبع → تقاطع → عودة
+buySequenceOk = buyAllFresh and
+     buyExtremeBar <= buyCrossBar and
+     buyCrossBar   <= buyReturnBar and
+     buyBandBar    <= buyReturnBar and
+     (not strictBandBeforeExtreme or buyBandBar <= buyExtremeBar)
+
+sellSequenceOk = sellAllFresh and
+     sellExtremeBar <= sellCrossBar and
+     sellCrossBar   <= sellReturnBar and
+     sellBandBar    <= sellReturnBar and
+     (not strictBandBeforeExtreme or sellBandBar <= sellExtremeBar)
+
+buySameBarOk  = buyBandEvent  and buyExtremeEvent  and buyCrossEvent  and buyReturnEvent
+sellSameBarOk = sellBandEvent and sellExtremeEvent and sellCrossEvent and sellReturnEvent
+
+buyNewCompletion  = buyBandEvent  or buyExtremeEvent  or buyCrossEvent  or buyReturnEvent
+sellNewCompletion = sellBandEvent or sellExtremeEvent or sellCrossEvent or sellReturnEvent
+
+buyLogicOk = switch signalLogic
+    "صارم: نفس الشمعة فقط"          => buySameBarOk
+    "تسلسل: تشبع ثم تقاطع ثم عودة"  => buySequenceOk and buyReturnEvent
+    =>                                  buyAllFresh and buyNewCompletion
+
+sellLogicOk = switch signalLogic
+    "صارم: نفس الشمعة فقط"          => sellSameBarOk
+    "تسلسل: تشبع ثم تقاطع ثم عودة"  => sellSequenceOk and sellReturnEvent
+    =>                                  sellAllFresh and sellNewCompletion
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 14) الإشارات النهائية
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+rawBuySignal = ready and flat and allowLong and buyLogicOk and
+     trendOkLong and inSession and volOk and riskGuardOk
+
+rawSellSignal = ready and flat and allowShort and sellLogicOk and
+     trendOkShort and inSession and volOk and riskGuardOk
+
+buySignal  = rawBuySignal  and not rawSellSignal
+sellSignal = rawSellSignal and not rawBuySignal
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 15) حساب الوقف والهدف (الوقف الهجين)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// مرشحات الوقف للشراء (الأبعد = الأكثر أمانًا = الأقل قيمة)
+longStopWick  = low        - slBufferPips * pipSize
+longStopOuter = lowerOuter - slBufferPips * pipSize
+longStopMin   = close      - minStopPips  * pipSize
+
+longStopCandidate = useHybridStop ?
+     math.min(longStopWick, longStopOuter, longStopMin) :
+     longStopWick
+
+// مرشحات الوقف للبيع (الأعلى = الأكثر أمانًا)
+shortStopWick  = high       + slBufferPips * pipSize
+shortStopOuter = upperOuter + slBufferPips * pipSize
+shortStopMax   = close      + minStopPips  * pipSize
+
+shortStopCandidate = useHybridStop ?
+     math.max(shortStopWick, shortStopOuter, shortStopMax) :
+     shortStopWick
+
+longRisk  = close - longStopCandidate
+shortRisk = shortStopCandidate - close
+
+longTargetCandidate  = close + longRisk  * riskReward
+shortTargetCandidate = close - shortRisk * riskReward
+
+// فحص صلاحية الصفقة (الحد الأدنى والأقصى للوقف)
+longRiskPips  = longRisk  / pipSize
+shortRiskPips = shortRisk / pipSize
+
+validLongOrder = buySignal and
+     longRisk > syminfo.mintick and
+     longStopCandidate < close and
+     longRiskPips  >= minStopPips and
+     longRiskPips  <= maxStopPips
+
+validShortOrder = sellSignal and
+     shortRisk > syminfo.mintick and
+     shortStopCandidate > close and
+     shortRiskPips >= minStopPips and
+     shortRiskPips <= maxStopPips
+
+useTargetExit = exitMode == "وقف + هدف RR" or
+     exitMode == "وقف + هدف RR أو تقاطع معاكس"
+
+useCrossExit = exitMode == "وقف + تقاطع معاكس" or
+     exitMode == "وقف + هدف RR أو تقاطع معاكس"
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 16) حساب حجم الصفقة الديناميكي
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+riskCashTarget = strategy.equity * riskPercent / 100
+
+dynamicLongQty  = useRiskSizing and longRisk  > 0 ? riskCashTarget / longRisk  : orderQty
+dynamicShortQty = useRiskSizing and shortRisk > 0 ? riskCashTarget / shortRisk : orderQty
+
+finalLongQty  = useRiskSizing ? math.max(1, dynamicLongQty)  : orderQty
+finalShortQty = useRiskSizing ? math.max(1, dynamicShortQty) : orderQty
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 17) تنفيذ الصفقات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+var float activeStop      = na
+var float activeTarget    = na
+var float activeEntryPrice = na
+var float activeInitialRisk = na
+var int   entryBar        = na
+var string activeSide     = ""
+var bool  breakevenMoved  = false
+
+// إعادة ضبط تسلسل الفرصة تُنفّذ مباشرة داخل كتل التنفيذ لأن Pine Script لا يسمح بتعديل المتغيرات العامة من داخل الدالة.
+
+if validLongOrder
+    activeStop       := longStopCandidate
+    activeTarget     := longTargetCandidate
+    activeEntryPrice := close
+    activeInitialRisk := longRisk
+    entryBar         := bar_index
+    activeSide       := "شراء"
+    breakevenMoved   := false
+    dailyTradeCount  := dailyTradeCount + 1
+    buyBandBar     := na
+    buyExtremeBar  := na
+    buyCrossBar    := na
+    buyReturnBar   := na
+    buyBandLow     := na
+    sellBandBar    := na
+    sellExtremeBar := na
+    sellCrossBar   := na
+    sellReturnBar  := na
+    sellBandHigh   := na
+    strategy.entry("شراء", strategy.long, qty=finalLongQty)
+
+if validShortOrder
+    activeStop       := shortStopCandidate
+    activeTarget     := shortTargetCandidate
+    activeEntryPrice := close
+    activeInitialRisk := shortRisk
+    entryBar         := bar_index
+    activeSide       := "بيع"
+    breakevenMoved   := false
+    dailyTradeCount  := dailyTradeCount + 1
+    buyBandBar     := na
+    buyExtremeBar  := na
+    buyCrossBar    := na
+    buyReturnBar   := na
+    buyBandLow     := na
+    sellBandBar    := na
+    sellExtremeBar := na
+    sellCrossBar   := na
+    sellReturnBar  := na
+    sellBandHigh   := na
+    strategy.entry("بيع", strategy.short, qty=finalShortQty)
+
+// تعديل الوقف للتعادل عند 1R
+if useBreakeven and strategy.position_size > 0 and not breakevenMoved
+    if high >= activeEntryPrice + activeInitialRisk
+        activeStop := activeEntryPrice
+        breakevenMoved := true
+
+if useBreakeven and strategy.position_size < 0 and not breakevenMoved
+    if low <= activeEntryPrice - activeInitialRisk
+        activeStop := activeEntryPrice
+        breakevenMoved := true
+
+// أوامر الخروج
+if strategy.position_size > 0 and not na(activeStop)
+    strategy.exit("وقف/هدف شراء",
+         from_entry="شراء",
+         stop=activeStop,
+         limit=useTargetExit ? activeTarget : na)
+
+if strategy.position_size < 0 and not na(activeStop)
+    strategy.exit("وقف/هدف بيع",
+         from_entry="بيع",
+         stop=activeStop,
+         limit=useTargetExit ? activeTarget : na)
+
+// خروج بالتقاطع المعاكس
+if strategy.position_size > 0 and useCrossExit and exitLongByCross
+    strategy.close("شراء", comment="تقاطع معاكس")
+
+if strategy.position_size < 0 and useCrossExit and exitShortByCross
+    strategy.close("بيع", comment="تقاطع معاكس")
+
+// خروج زمني
+if useTimeExit and strategy.position_size != 0 and not na(entryBar)
+    if bar_index - entryBar >= maxHoldBars
+        strategy.close_all(comment="خروج زمني")
+
+// إغلاق إجباري عند تفعيل حماية FTMO
+if blockAll and strategy.position_size != 0
+    strategy.close_all(comment="حماية إجمالية")
+
+// تنظيف بعد إغلاق الصفقة
+positionJustClosed = strategy.position_size == 0 and strategy.position_size[1] != 0
+
+if positionJustClosed
+    activeStop       := na
+    activeTarget     := na
+    activeEntryPrice := na
+    activeInitialRisk := na
+    entryBar         := na
+    activeSide       := ""
+    breakevenMoved   := false
+    buyBandBar     := na
+    buyExtremeBar  := na
+    buyCrossBar    := na
+    buyReturnBar   := na
+    buyBandLow     := na
+    sellBandBar    := na
+    sellExtremeBar := na
+    sellCrossBar   := na
+    sellReturnBar  := na
+    sellBandHigh   := na
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 18) الرسم على الشارت
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+plot(showBasis ? basis : na, "متوسط البولينجر",
+     color=color.rgb(255, 165, 0), linewidth=2)
+
+upperInnerPlot = plot(showBands ? upperInner : na, "الداخلي العلوي +1",
+     color=color.rgb(30, 120, 255), linewidth=2)
+
+lowerInnerPlot = plot(showBands ? lowerInner : na, "الداخلي السفلي -1",
+     color=color.rgb(30, 120, 255), linewidth=2)
+
+upperOuterPlot = plot(showBands ? upperOuter : na, "الخارجي العلوي +2",
+     color=color.rgb(215, 65, 255), linewidth=2)
+
+lowerOuterPlot = plot(showBands ? lowerOuter : na, "الخارجي السفلي -2",
+     color=color.rgb(215, 65, 255), linewidth=2)
+
+fill(upperInnerPlot, upperOuterPlot,
+     color=color.new(color.rgb(220, 55, 80), 86), title="منطقة البيع")
+
+fill(lowerInnerPlot, lowerOuterPlot,
+     color=color.new(color.rgb(25, 180, 100), 86), title="منطقة الشراء")
+
+plot(showHtfEma and useTrendFilter ? htfEma : na,
+     "EMA على HTF", color=color.rgb(255, 220, 0), linewidth=2)
+
+plot(showOrders and strategy.position_size != 0 ? activeStop : na,
+     "وقف الخسارة",
+     color=color.rgb(255, 45, 65), linewidth=2, style=plot.style_linebr)
+
+plot(showOrders and strategy.position_size != 0 and useTargetExit ? activeTarget : na,
+     "هدف RR",
+     color=color.rgb(20, 225, 110), linewidth=2, style=plot.style_linebr)
+
+plot(showOrders and strategy.position_size != 0 ? activeEntryPrice : na,
+     "سعر الدخول",
+     color=color.rgb(200, 200, 200), linewidth=1, style=plot.style_linebr)
+
+// علامات التشخيص
+plotshape(showStages and buyBandEvent, title="وصول شراء",
+     style=shape.circle, location=location.belowbar,
+     color=color.rgb(30, 140, 255), size=size.tiny, text="منطقة")
+
+plotshape(showStages and sellBandEvent, title="وصول بيع",
+     style=shape.circle, location=location.abovebar,
+     color=color.rgb(255, 155, 20), size=size.tiny, text="منطقة")
+
+plotshape(showStages and buyExtremeEvent, title="تشبع بيعي",
+     style=shape.square, location=location.belowbar,
+     color=color.rgb(0, 205, 205), size=size.tiny, text="20")
+
+plotshape(showStages and sellExtremeEvent, title="تشبع شرائي",
+     style=shape.square, location=location.abovebar,
+     color=color.rgb(255, 190, 0), size=size.tiny, text="80")
+
+plotshape(showStages and buyCrossEvent, title="تقاطع صاعد",
+     style=shape.diamond, location=location.belowbar,
+     color=color.aqua, size=size.small, text="تقاطع")
+
+plotshape(showStages and sellCrossEvent, title="تقاطع هابط",
+     style=shape.diamond, location=location.abovebar,
+     color=color.orange, size=size.small, text="تقاطع")
+
+plotshape(showStages and buyReturnEvent, title="عودة شراء",
+     style=shape.xcross, location=location.belowbar,
+     color=color.lime, size=size.small, text="عودة")
+
+plotshape(showStages and sellReturnEvent, title="عودة بيع",
+     style=shape.xcross, location=location.abovebar,
+     color=color.red, size=size.small, text="عودة")
+
+plotshape(showSignals and validLongOrder, title="دخول شراء",
+     style=shape.triangleup, location=location.belowbar,
+     color=color.rgb(0, 225, 95), text="شراء",
+     textcolor=color.white, size=size.normal)
+
+plotshape(showSignals and validShortOrder, title="دخول بيع",
+     style=shape.triangledown, location=location.abovebar,
+     color=color.rgb(245, 50, 70), text="بيع",
+     textcolor=color.white, size=size.normal)
+
+// خلفية تنبيه عند تفعيل حماية FTMO
+bgcolor(blockToday ? color.new(color.red, 92) : na,    title="تنبيه: حد يومي")
+bgcolor(blockAll   ? color.new(color.purple, 90) : na, title="تنبيه: تراجع إجمالي")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 19) لوحة المعلومات
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+headerBg  = color.rgb(18, 92, 171)
+labelBg   = color.rgb(43, 67, 92)
+valueBg   = color.rgb(60, 86, 112)
+passBg    = color.rgb(20, 125, 88)
+failBg    = color.rgb(175, 46, 57)
+warnBg    = color.rgb(190, 112, 22)
+neutralBg = color.rgb(78, 96, 117)
+whiteText = color.white
+
+var table panel = table.new(position.top_right, 2, 28,
+     border_width=1,
+     border_color=color.rgb(155, 175, 195),
+     frame_width=2,
+     frame_color=headerBg)
+
+mark(bool c) => c ? "نعم ✓" : "لا ✗"
+
+profitFactor = math.abs(strategy.grossloss) > 0 ?
+     strategy.grossprofit / math.abs(strategy.grossloss) : na
+
+winRate = strategy.closedtrades > 0 ?
+     strategy.wintrades / strategy.closedtrades * 100 : 0.0
+
+avgWin = strategy.wintrades > 0 ?
+     strategy.grossprofit / strategy.wintrades : 0.0
+
+avgLoss = strategy.losstrades > 0 ?
+     math.abs(strategy.grossloss) / strategy.losstrades : 0.0
+
+avgRR = avgLoss > 0 ? avgWin / avgLoss : na
+
+buyState = switch
+    buyAllFresh             => "مكتملة"
+    isFresh(buyCrossBar)    => "تقاطع محفوظ"
+    isFresh(buyExtremeBar)  => "تشبع محفوظ"
+    isFresh(buyBandBar)     => "وصول محفوظ"
+    =>                          "لا توجد"
+
+sellState = switch
+    sellAllFresh            => "مكتملة"
+    isFresh(sellCrossBar)   => "تقاطع محفوظ"
+    isFresh(sellExtremeBar) => "تشبع محفوظ"
+    isFresh(sellBandBar)    => "وصول محفوظ"
+    =>                          "لا توجد"
+
+reasonText = switch
+    blockAll                                                              => "محظور: تجاوز التراجع"
+    blockToday                                                            => "محظور: حد يومي"
+    strategy.position_size != 0                                           => "صفقة مفتوحة"
+    validLongOrder                                                        => "شراء جاهز"
+    validShortOrder                                                       => "بيع جاهز"
+    isFresh(buyCrossBar)  and not isFresh(buyReturnBar)                   => "شراء: بانتظار العودة"
+    isFresh(sellCrossBar) and not isFresh(sellReturnBar)                  => "بيع: بانتظار العودة"
+    isFresh(buyExtremeBar)  and not isFresh(buyCrossBar)                  => "شراء: بانتظار التقاطع"
+    isFresh(sellExtremeBar) and not isFresh(sellCrossBar)                 => "بيع: بانتظار التقاطع"
+    not inSession                                                         => "خارج الجلسة"
+    useTrendFilter and not trendOkLong and not trendOkShort               => "ضد الاتجاه"
+    =>                                                                       "لا إشارة"
+
+statusBg = validLongOrder or validShortOrder ? passBg :
+     strategy.position_size != 0 ? warnBg :
+     blockAll or blockToday ? failBg :
+     neutralBg
+
+pfBg = na(profitFactor) ? neutralBg :
+     profitFactor >= 1.50 ? passBg :
+     profitFactor >= 1.00 ? warnBg : failBg
+
+netBg = strategy.netprofit > 0 ? passBg :
+     strategy.netprofit < 0 ? failBg : neutralBg
+
+winRateBg = winRate >= 50 ? passBg :
+     winRate >= 40 ? warnBg : failBg
+
+ddBg = totalDDPct <= maxTotalDDPct * 0.5 ? passBg :
+     totalDDPct <= maxTotalDDPct * 0.8 ? warnBg : failBg
+
+dailyBg = dailyLossPct <= maxDailyLossPct * 0.5 ? passBg :
+     dailyLossPct <= maxDailyLossPct * 0.8 ? warnBg : failBg
+
+if barstate.islast and showPanel
+    table.cell(panel, 0, 0,  "جنون التداول v2",                              bgcolor=headerBg, text_color=whiteText)
+    table.cell(panel, 1, 0,  syminfo.ticker + " " + timeframe.period,        bgcolor=headerBg, text_color=whiteText)
+
+    table.cell(panel, 0, 1,  "البولينجر",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 1,  str.tostring(bbLength) + " / ±" + str.tostring(innerDeviation) + " / ±" + str.tostring(outerDeviation), bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 2,  "Stochastic Slow",                              bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 2,  str.tostring(stochLength) + " / " + str.tostring(smoothK) + " / " + str.tostring(smoothD), bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 3,  "K / D",                                         bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 3,  str.tostring(slowK, "#.##") + " / " + str.tostring(slowD, "#.##"), bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 4,  "طريقة الإشارة",                                 bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 4,  signalLogic,                                     bgcolor=valueBg,  text_color=whiteText)
+
+    table.cell(panel, 0, 5,  "وصول شراء",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 5,  mark(isFresh(buyBandBar)),                       bgcolor=isFresh(buyBandBar) ? passBg : failBg, text_color=whiteText)
+
+    table.cell(panel, 0, 6,  "تشبع شراء",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 6,  mark(isFresh(buyExtremeBar)),                    bgcolor=isFresh(buyExtremeBar) ? passBg : failBg, text_color=whiteText)
+
+    table.cell(panel, 0, 7,  "تقاطع شراء",                                    bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 7,  mark(isFresh(buyCrossBar)),                      bgcolor=isFresh(buyCrossBar) ? passBg : failBg, text_color=whiteText)
+
+    table.cell(panel, 0, 8,  "عودة شراء",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 8,  mark(isFresh(buyReturnBar)),                     bgcolor=isFresh(buyReturnBar) ? passBg : failBg, text_color=whiteText)
+
+    table.cell(panel, 0, 9,  "حالة الشراء / البيع",                           bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 9,  buyState + " / " + sellState,                    bgcolor=neutralBg, text_color=whiteText)
+
+    table.cell(panel, 0, 10, "اتجاه HTF",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 10, useTrendFilter ? (close > htfEma ? "صاعد ↑" : "هابط ↓") : "معطل", bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 11, "الجلسة",                                         bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 11, useSessionFilter ? (inSession ? "داخل ✓" : "خارج ✗") : "معطل", bgcolor=useSessionFilter ? (inSession ? passBg : failBg) : valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 12, "فلتر الحجم",                                    bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 12, useVolumeFilter ? (volOk ? "مؤكد ✓" : "ضعيف ✗") : "معطل", bgcolor=useVolumeFilter ? (volOk ? passBg : failBg) : valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 13, "حماية FTMO",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 13, useFtmoProtection ? (riskGuardOk ? "آمن ✓" : "محظور ✗") : "معطل", bgcolor=useFtmoProtection ? (riskGuardOk ? passBg : failBg) : valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 14, "خسارة اليوم %",                                  bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 14, str.tostring(dailyLossPct, "#.##") + "% / " + str.tostring(maxDailyLossPct) + "%", bgcolor=dailyBg, text_color=whiteText)
+
+    table.cell(panel, 0, 15, "تراجع إجمالي %",                                 bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 15, str.tostring(totalDDPct, "#.##") + "% / " + str.tostring(maxTotalDDPct) + "%", bgcolor=ddBg, text_color=whiteText)
+
+    table.cell(panel, 0, 16, "صفقات اليوم",                                    bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 16, str.tostring(dailyTradeCount),                   bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 17, "صفقة مفتوحة",                                    bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 17, strategy.position_size != 0 ? activeSide + " | TP: " + str.tostring(activeTarget, "#.#####") + " | SL: " + str.tostring(activeStop, "#.#####") : "لا", bgcolor=strategy.position_size != 0 ? warnBg : neutralBg, text_color=whiteText)
+
+    table.cell(panel, 0, 18, "الصفقات المغلقة",                                bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 18, str.tostring(strategy.closedtrades),             bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 19, "نسبة الفوز",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 19, str.tostring(winRate, "#.##") + "%",             bgcolor=winRateBg, text_color=whiteText)
+
+    table.cell(panel, 0, 20, "عامل الربح",                                    bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 20, na(profitFactor) ? "-" : str.tostring(profitFactor, "#.###"), bgcolor=pfBg, text_color=whiteText)
+
+    table.cell(panel, 0, 21, "متوسط RR",                                       bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 21, na(avgRR) ? "-" : str.tostring(avgRR, "#.##"),   bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 22, "متوسط الفوز / الخسارة",                          bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 22, str.tostring(avgWin, "#.##") + " / " + str.tostring(avgLoss, "#.##"), bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 23, "صافي الربح",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 23, str.tostring(strategy.netprofit, "#.##") + " $", bgcolor=netBg, text_color=whiteText)
+
+    table.cell(panel, 0, 24, "ذروة رأس المال",                                  bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 24, str.tostring(peakEquity, "#.##") + " $",         bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 25, "حجم الصفقة",                                     bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 25, useRiskSizing ? "ديناميكي ~" + str.tostring(useRiskSizing ? finalLongQty : orderQty, "#") : str.tostring(orderQty, "#"), bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 26, "وضع الوقف",                                      bgcolor=labelBg,  text_color=whiteText)
+    table.cell(panel, 1, 26, useHybridStop ? "هجين ✓" : "فتيل فقط",            bgcolor=valueBg, text_color=whiteText)
+
+    table.cell(panel, 0, 27, "الحالة",                                          bgcolor=headerBg, text_color=whiteText)
+    table.cell(panel, 1, 27, reasonText,                                       bgcolor=statusBg, text_color=whiteText)

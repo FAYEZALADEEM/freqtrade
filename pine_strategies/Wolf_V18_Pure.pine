@@ -1,0 +1,382 @@
+//@version=6
+// =====================================================================
+// Wolf System V18 [Pure - Lectures Edition]
+// مبني حرفيا من 11 محاضرة. لا ADX. لا RSI. لا فلاتر زائدة.
+// القلب: Engulfing(جسم يبلع جسم) + Super + Fibo 50-61.8 + إغلاق
+// =====================================================================
+strategy("Wolf V18 [Pure]",
+     overlay=true,
+     initial_capital=10000,
+     commission_type=strategy.commission.cash_per_order,
+     commission_value=2.0,
+     slippage=2,
+     process_orders_on_close=true,
+     calc_on_every_tick=false,
+     pyramiding=0)
+
+// =====================================================================
+// 1. الإعدادات
+// =====================================================================
+g1 = "1. الفريمات (السيكونس)"
+htf_bias = input.timeframe("D",  "فريم الاتجاه (Bias HTF)", group=g1)
+htf_zone = input.timeframe("240","فريم المناطق (Zone HTF)", group=g1)
+// التنفيذ على فريم الشارت الحالي = LTF
+
+g2 = "2. الابتلاع (Engulfing - الذيب)"
+require_explosion = input.bool(true, "اشترط شمعة انفجار بعد الابتلاع", group=g2,
+     tooltip="شمعة الانفجار يجب ان تغلق فوق High شمعة الابتلاع (للشراء)")
+body_only         = input.bool(true, "جسم يبلع جسم (تجاهل الذيل)", group=g2)
+min_explosion_atr = input.float(1.0, "حد ادنى لطول شمعة الانفجار (× ATR)", step=0.1, group=g2)
+
+g3 = "3. السوبر (Super Pattern)"
+use_super         = input.bool(true, "اشترط نموذج السوبر للدخول", group=g3,
+     tooltip="قمة اعلى من قمة + قاع اقل من قاع + اغلاق فوق القمة الوسطى")
+pivot_left        = input.int(2, "Pivot left", minval=1, group=g3)
+pivot_right       = input.int(2, "Pivot right", minval=1, group=g3)
+
+g4 = "4. الفيبوناتشي (50-61.8%)"
+use_fibo          = input.bool(true, "اشترط ارتداد عند 50-61.8%", group=g4)
+fib_min           = input.float(0.50,  "اقل ارتداد مقبول", step=0.01, group=g4)
+fib_max           = input.float(0.786, "اعلى ارتداد مقبول", step=0.01, group=g4)
+
+g5 = "5. التوقيت (Sessions)"
+use_session       = input.bool(true, "تفعيل فلتر الجلسات", group=g5)
+sess_london       = input.session("0630-1130", "نافذة لندن (30دق قبل + 1س بعد)", group=g5)
+sess_newyork      = input.session("1200-1700", "نافذة نيويورك", group=g5)
+session_tz        = input.string("UTC", "المنطقة الزمنية", options=["UTC","Asia/Riyadh","America/New_York","Europe/London"], group=g5)
+
+g6 = "6. ادارة المخاطر"
+use_auto_qty      = input.bool(true, "حجم اللوت آلي بناء على % المخاطرة", group=g6)
+risk_pct          = input.float(1.0,  "% المخاطرة لكل صفقة", step=0.1, group=g6)
+fixed_qty         = input.float(1.0,  "حجم ثابت اذا الآلي معطل", step=0.1, group=g6)
+min_sl_dist       = input.float(0.0,  "اقل مسافة وقف (بسعر الأصل)", step=0.1, group=g6,
+     tooltip="للذهب 2.0$, لليورو 0.0010, للباوند/ين 0.10")
+
+g7 = "7. الأهداف وحماية الدخول"
+sl_atr_mult       = input.float(1.0, "سماحية SL × ATR خلف المنطقة", step=0.1, group=g7)
+tp_rr             = input.float(2.0, "هدف TP الرئيسي (R:R)", step=0.5, group=g7)
+use_partial       = input.bool(true, "جني 50% عند 1R + تحريك SL للدخول", group=g7)
+partial_r         = input.float(1.0, "نقطة الجني الجزئي (R)", step=0.1, group=g7)
+
+g8 = "8. الواجهة"
+show_zones        = input.bool(true, "اظهار المناطق", group=g8)
+show_super        = input.bool(true, "اظهار نقاط السوبر", group=g8)
+show_dash         = input.bool(true, "اظهار لوحة الحالة", group=g8)
+max_zones         = input.int(20, "اقصى عدد مناطق نشطة", minval=5, maxval=50, group=g8)
+
+// =====================================================================
+// 2. مؤشرات اساسية
+// =====================================================================
+atr14 = ta.atr(14)
+
+// HTF Bias - الاتجاه من فريم اعلى (المحاضرة 2 - قاعدة الاغلاق)
+htf_ph     = request.security(syminfo.tickerid, htf_bias, ta.pivothigh(pivot_left, pivot_right), barmerge.gaps_off, barmerge.lookahead_off)
+htf_pl     = request.security(syminfo.tickerid, htf_bias, ta.pivotlow(pivot_left, pivot_right),  barmerge.gaps_off, barmerge.lookahead_off)
+htf_close  = request.security(syminfo.tickerid, htf_bias, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+
+// تتبع آخر pivot HTF
+var float last_htf_high = na
+var float last_htf_low  = na
+if not na(htf_ph)
+    last_htf_high := htf_ph
+if not na(htf_pl)
+    last_htf_low  := htf_pl
+
+// الاتجاه = اغلاق HTF فوق آخر قمة مكسورة او تحت آخر قاع
+bull_bias = not na(last_htf_high) and htf_close > last_htf_high
+bear_bias = not na(last_htf_low)  and htf_close < last_htf_low
+
+// =====================================================================
+// 3. الابتلاع (Engulfing - الذيب): جسم يبلع جسم + انفجار
+// =====================================================================
+// نطبق على فريم Zone (HTF متوسط)
+ho1 = request.security(syminfo.tickerid, htf_zone, open[1],  barmerge.gaps_off, barmerge.lookahead_off)
+hc1 = request.security(syminfo.tickerid, htf_zone, close[1], barmerge.gaps_off, barmerge.lookahead_off)
+hh1 = request.security(syminfo.tickerid, htf_zone, high[1],  barmerge.gaps_off, barmerge.lookahead_off)
+hl1 = request.security(syminfo.tickerid, htf_zone, low[1],   barmerge.gaps_off, barmerge.lookahead_off)
+ho2 = request.security(syminfo.tickerid, htf_zone, open[2],  barmerge.gaps_off, barmerge.lookahead_off)
+hc2 = request.security(syminfo.tickerid, htf_zone, close[2], barmerge.gaps_off, barmerge.lookahead_off)
+hh2 = request.security(syminfo.tickerid, htf_zone, high[2],  barmerge.gaps_off, barmerge.lookahead_off)
+hl2 = request.security(syminfo.tickerid, htf_zone, low[2],   barmerge.gaps_off, barmerge.lookahead_off)
+ho0 = request.security(syminfo.tickerid, htf_zone, open,     barmerge.gaps_off, barmerge.lookahead_off)
+hc0 = request.security(syminfo.tickerid, htf_zone, close,    barmerge.gaps_off, barmerge.lookahead_off)
+htf_zone_change = ta.change(time(htf_zone))
+
+// جسم الشمعة الماضية (المبتلَعة)
+prev_body_top    = math.max(hc2, ho2)
+prev_body_bottom = math.min(hc2, ho2)
+// جسم الشمعة الحالية (البالعة)
+curr_body_top    = math.max(hc1, ho1)
+curr_body_bottom = math.min(hc1, ho1)
+
+// Bullish Engulfing (الذيب): الشمعة الحمراء بُلعت بشمعة خضراء، الجسم يغطي الجسم
+bull_eng = (hc2 < ho2) and (hc1 > ho1) and (curr_body_bottom <= prev_body_bottom) and (curr_body_top >= prev_body_top)
+bear_eng = (hc2 > ho2) and (hc1 < ho1) and (curr_body_top    >= prev_body_top)    and (curr_body_bottom <= prev_body_bottom)
+
+// شرط الانفجار: الشمعة التالية (الحالية في HTF) تكسر High/Low البالعة وطولها > ATR×N
+explosion_size_long  = (hh1 - hl1) >= (atr14 * min_explosion_atr)
+explosion_size_short = (hh1 - hl1) >= (atr14 * min_explosion_atr)
+bull_explosion = require_explosion ? (hc1 > hh2 and explosion_size_long)  : true
+bear_explosion = require_explosion ? (hc1 < hl2 and explosion_size_short) : true
+
+// حدود المنطقة
+demand_top    = body_only ? prev_body_top    : math.max(hh2, prev_body_top)
+demand_bottom = body_only ? prev_body_bottom : hl2
+supply_top    = body_only ? prev_body_top    : hh2
+supply_bottom = body_only ? prev_body_bottom : math.min(hl2, prev_body_bottom)
+
+// =====================================================================
+// 4. ادارة المناطق
+// =====================================================================
+type Zone
+    float top
+    float bot
+    bool  is_demand
+    bool  active
+    int   created_bar
+    box   bx
+
+var array<Zone> zones = array.new<Zone>()
+
+// انشاء منطقة جديدة عند بداية شمعة HTF Zone جديدة
+if htf_zone_change != 0 and barstate.isconfirmed
+    if bull_eng and bull_explosion
+        b = show_zones ? box.new(bar_index, demand_top, bar_index + 5, demand_bottom,
+             bgcolor=color.new(color.green, 85), border_color=color.new(color.green, 50)) : na
+        array.push(zones, Zone.new(demand_top, demand_bottom, true, true, bar_index, b))
+
+    if bear_eng and bear_explosion
+        b = show_zones ? box.new(bar_index, supply_top, bar_index + 5, supply_bottom,
+             bgcolor=color.new(color.red, 85), border_color=color.new(color.red, 50)) : na
+        array.push(zones, Zone.new(supply_top, supply_bottom, false, true, bar_index, b))
+
+    // حد اقصى للمناطق
+    while array.size(zones) > max_zones
+        old = array.shift(zones)
+        if not na(old.bx)
+            box.delete(old.bx)
+
+// =====================================================================
+// 5. السوبر (Super Pattern) على فريم التنفيذ الحالي
+// =====================================================================
+ph_ltf = ta.pivothigh(pivot_left, pivot_right)
+pl_ltf = ta.pivotlow(pivot_left, pivot_right)
+
+var float last_high  = na
+var float prev_high  = na
+var float last_low   = na
+var float prev_low   = na
+var float mid_high   = na  // القمة الوسطى للسوبر الإيجابي
+var float mid_low    = na  // القاع الوسطى للسوبر السلبي
+
+if not na(ph_ltf)
+    prev_high := last_high
+    last_high := ph_ltf
+if not na(pl_ltf)
+    prev_low  := last_low
+    last_low  := pl_ltf
+
+// Bullish Super: قاع اقل من قاع + قمة اعلى من قمة + اغلاق فوق القمة الوسطى
+// المنطق: low_B < low_A، ثم high أعلى من القمة بين A و B
+bull_super_setup = not na(last_low) and not na(prev_low) and not na(last_high) and (last_low < prev_low) and (last_high > prev_high)
+bear_super_setup = not na(last_low) and not na(prev_low) and not na(last_high) and not na(prev_high) and (last_high > prev_high) and (last_low < prev_low) ? false : (not na(last_high) and not na(prev_high) and not na(last_low) and (last_high > prev_high) and (last_low < prev_low) ? false : (not na(last_low) and not na(prev_low) and (last_high < prev_high) and (last_low > prev_low)))
+
+// تبسيط: التركيز على Bullish Super (وأخوه السلبي معكوس)
+// Bullish Super الكامل = اغلاق شمعة فوق آخر pivot high الذي سبقه قاع اقل
+bull_super_confirmed = bull_super_setup and (close > last_high) and ta.crossover(close, last_high)
+bear_super_confirmed = (not na(last_high) and not na(prev_high) and last_high < prev_high and not na(last_low) and not na(prev_low) and last_low < prev_low) and (close < last_low) and ta.crossunder(close, last_low)
+
+// =====================================================================
+// 6. الفيبوناتشي 50-61.8 على آخر موجة
+// =====================================================================
+// تحديد آخر swing على LTF
+var float swing_high_val = na
+var float swing_low_val  = na
+var int   swing_high_bar = na
+var int   swing_low_bar  = na
+
+if not na(ph_ltf)
+    swing_high_val := ph_ltf
+    swing_high_bar := bar_index - pivot_right
+if not na(pl_ltf)
+    swing_low_val  := pl_ltf
+    swing_low_bar  := bar_index - pivot_right
+
+// نسبة الارتداد الحالية
+float fib_ret = na
+bool  fib_ok_long  = false
+bool  fib_ok_short = false
+
+if not na(swing_high_val) and not na(swing_low_val)
+    if swing_high_bar > swing_low_bar  // موجة صاعدة، نقيس البولباك
+        range_up = swing_high_val - swing_low_val
+        if range_up > 0
+            fib_ret := (swing_high_val - close) / range_up
+            fib_ok_long := use_fibo ? (fib_ret >= fib_min and fib_ret <= fib_max) : true
+    else  // موجة هابطة
+        range_dn = swing_high_val - swing_low_val
+        if range_dn > 0
+            fib_ret := (close - swing_low_val) / range_dn
+            fib_ok_short := use_fibo ? (fib_ret >= fib_min and fib_ret <= fib_max) : true
+
+// =====================================================================
+// 7. فلتر الجلسات
+// =====================================================================
+in_lon = not na(time(timeframe.period, sess_london,  session_tz))
+in_ny  = not na(time(timeframe.period, sess_newyork, session_tz))
+in_sess = use_session ? (in_lon or in_ny) : true
+
+// =====================================================================
+// 8. التنفيذ - منطق الدخول
+// =====================================================================
+var float entry_price = na
+var float entry_sl    = na
+var float entry_tp1   = na
+var float entry_tp2   = na
+var bool  be_moved    = false
+
+can_long  = false
+can_short = false
+
+// المرور على المناطق النشطة
+n = array.size(zones)
+if n > 0
+    for i = n - 1 to 0
+        z = array.get(zones, i)
+        if not z.active
+            continue
+
+        // تمديد المنطقة بصريا
+        if show_zones and not na(z.bx)
+            box.set_right(z.bx, bar_index + 2)
+
+        // ابطال المنطقة: اغلاق خارجها
+        if (z.is_demand and close < z.bot) or (not z.is_demand and close > z.top)
+            z.active := false
+            if show_zones and not na(z.bx)
+                box.set_bgcolor(z.bx, color.new(color.gray, 92))
+            continue
+
+        // شراء: السعر داخل منطقة طلب + اتجاه صاعد + سوبر (اختياري) + فيبو + جلسة
+        super_ok_long = use_super ? bull_super_confirmed : true
+        if z.is_demand and z.active and low <= z.top and close >= z.bot
+            if bull_bias and in_sess and super_ok_long and fib_ok_long and strategy.position_size == 0
+                can_long := true
+                entry_price := close
+                entry_sl    := z.bot - (atr14 * sl_atr_mult)
+                if min_sl_dist > 0 and (entry_price - entry_sl) < min_sl_dist
+                    entry_sl := entry_price - min_sl_dist
+                entry_tp1   := entry_price + (entry_price - entry_sl) * partial_r
+                entry_tp2   := entry_price + (entry_price - entry_sl) * tp_rr
+                be_moved    := false
+                z.active    := false  // المنطقة استُهلكت
+
+        // بيع
+        super_ok_short = use_super ? bear_super_confirmed : true
+        if not z.is_demand and z.active and high >= z.bot and close <= z.top
+            if bear_bias and in_sess and super_ok_short and fib_ok_short and strategy.position_size == 0
+                can_short := true
+                entry_price := close
+                entry_sl    := z.top + (atr14 * sl_atr_mult)
+                if min_sl_dist > 0 and (entry_sl - entry_price) < min_sl_dist
+                    entry_sl := entry_price + min_sl_dist
+                entry_tp1   := entry_price - (entry_sl - entry_price) * partial_r
+                entry_tp2   := entry_price - (entry_sl - entry_price) * tp_rr
+                be_moved    := false
+                z.active    := false
+
+// =====================================================================
+// 9. حساب حجم اللوت
+// =====================================================================
+calc_qty(float entry, float stop) =>
+    float risk_per_unit = math.max(math.abs(entry - stop), syminfo.mintick)
+    float risk_amount   = strategy.equity * (risk_pct / 100.0)
+    float pt_value      = syminfo.pointvalue > 0 ? syminfo.pointvalue : 1.0
+    float q = risk_amount / (risk_per_unit * pt_value)
+    use_auto_qty ? math.max(math.round(q, 2), syminfo.mintick) : fixed_qty
+
+// =====================================================================
+// 10. ارسال الأوامر
+// =====================================================================
+if can_long and not na(entry_sl) and not na(entry_tp2)
+    q = calc_qty(entry_price, entry_sl)
+    strategy.entry("Long", strategy.long, qty=q, comment="Wolf L")
+    if use_partial
+        strategy.exit("TP1-L", "Long", qty_percent=50, limit=entry_tp1, stop=entry_sl, comment_profit="TP1", comment_loss="SL")
+    strategy.exit("TP2-L", "Long", limit=entry_tp2, stop=entry_sl, comment_profit="TP2", comment_loss="SL")
+
+if can_short and not na(entry_sl) and not na(entry_tp2)
+    q = calc_qty(entry_price, entry_sl)
+    strategy.entry("Short", strategy.short, qty=q, comment="Wolf S")
+    if use_partial
+        strategy.exit("TP1-S", "Short", qty_percent=50, limit=entry_tp1, stop=entry_sl, comment_profit="TP1", comment_loss="SL")
+    strategy.exit("TP2-S", "Short", limit=entry_tp2, stop=entry_sl, comment_profit="TP2", comment_loss="SL")
+
+// تحريك SL لنقطة الدخول بعد TP1
+if strategy.position_size > 0 and use_partial and not be_moved
+    if high >= entry_tp1
+        be_moved := true
+        strategy.exit("TP2-L", "Long", limit=entry_tp2, stop=entry_price)
+
+if strategy.position_size < 0 and use_partial and not be_moved
+    if low <= entry_tp1
+        be_moved := true
+        strategy.exit("TP2-S", "Short", limit=entry_tp2, stop=entry_price)
+
+// =====================================================================
+// 11. الواجهة البصرية
+// =====================================================================
+// خلفية الاتجاه
+bg_col = bull_bias ? color.new(color.green, 95) : bear_bias ? color.new(color.red, 95) : color.new(color.gray, 97)
+bgcolor(bg_col)
+
+// نقاط الدخول
+plotshape(can_long,  style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small, title="Long Signal")
+plotshape(can_short, style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small, title="Short Signal")
+
+// السوبر
+plotshape(show_super and bull_super_confirmed, style=shape.diamond, location=location.belowbar, color=color.aqua,   size=size.tiny, title="Bull Super")
+plotshape(show_super and bear_super_confirmed, style=shape.diamond, location=location.abovebar, color=color.fuchsia,size=size.tiny, title="Bear Super")
+
+// خطوط الصفقة الحالية
+plot(strategy.position_size != 0 ? entry_price : na, "Entry", color=color.yellow, linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? entry_sl    : na, "SL",    color=color.red,    linewidth=1, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? entry_tp2   : na, "TP",    color=color.lime,   linewidth=1, style=plot.style_linebr)
+
+// لوحة الحالة
+if show_dash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 75), border_width=1, border_color=color.gray)
+    table.cell(dash, 0, 0, "Wolf V18 [Pure]", text_color=color.white, bgcolor=color.new(color.blue, 50))
+    table.cell(dash, 1, 0, syminfo.ticker, text_color=color.white, bgcolor=color.new(color.blue, 50))
+
+    table.cell(dash, 0, 1, "Bias",      text_color=color.white)
+    table.cell(dash, 1, 1, bull_bias ? "🟢 BULL" : bear_bias ? "🔴 BEAR" : "⚪ SIDE", text_color=color.white)
+
+    table.cell(dash, 0, 2, "Session",   text_color=color.white)
+    table.cell(dash, 1, 2, in_sess ? "✅ ON" : "💤 OFF", text_color=in_sess ? color.lime : color.gray)
+
+    table.cell(dash, 0, 3, "Zones",     text_color=color.white)
+    table.cell(dash, 1, 3, str.tostring(array.size(zones)), text_color=color.yellow)
+
+    table.cell(dash, 0, 4, "Fib%",      text_color=color.white)
+    table.cell(dash, 1, 4, na(fib_ret) ? "—" : str.tostring(math.round(fib_ret * 100, 1)) + "%",
+         text_color=(fib_ok_long or fib_ok_short) ? color.lime : color.gray)
+
+    table.cell(dash, 0, 5, "Super",     text_color=color.white)
+    table.cell(dash, 1, 5, bull_super_confirmed ? "🟢" : bear_super_confirmed ? "🔴" : "—", text_color=color.white)
+
+    table.cell(dash, 0, 6, "Position",  text_color=color.white)
+    pos_txt = strategy.position_size > 0 ? "LONG " + str.tostring(strategy.position_size) :
+              strategy.position_size < 0 ? "SHORT " + str.tostring(strategy.position_size) : "FLAT"
+    table.cell(dash, 1, 6, pos_txt, text_color=color.white)
+
+    table.cell(dash, 0, 7, "PF",        text_color=color.white)
+    pf_val = strategy.grossloss > 0 ? strategy.grossprofit / strategy.grossloss : 0.0
+    table.cell(dash, 1, 7, str.tostring(math.round(pf_val, 2)),
+         text_color=pf_val >= 1.0 ? color.lime : color.red)
+
+// =====================================================================
+// 12. التنبيهات
+// =====================================================================
+alertcondition(can_long,  title="Wolf V18 - Long",  message="Wolf V18 Long signal {{ticker}} @ {{close}}")
+alertcondition(can_short, title="Wolf V18 - Short", message="Wolf V18 Short signal {{ticker}} @ {{close}}")

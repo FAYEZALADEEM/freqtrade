@@ -1,0 +1,83 @@
+//@version=6
+strategy("LIB-STR005 - EMA/Structure/Engulfing Manual Test - Research Draft", overlay=true, pyramiding=0, process_orders_on_close=true)
+
+// Educational research draft only. Not financial advice or a trading recommendation.
+// Source rules do not confirm exact entries, exits, SL, or TP. Treat all signals as test hypotheses.
+
+groupCore = "Core"
+groupRisk = "Optional Exit / SLTP"
+groupVisual = "Visuals"
+
+enableLong = input.bool(true, "Enable long", group=groupCore)
+enableShort = input.bool(true, "Enable short", group=groupCore)
+minBarsBetweenSignals = input.int(5, "Minimum bars between signals", minval=0, group=groupCore)
+fastLen = input.int(21, "Fast EMA", minval=2, group=groupCore)
+slowLen = input.int(55, "Slow EMA", minval=3, group=groupCore)
+structureLookback = input.int(20, "Structure lookback", minval=5, group=groupCore)
+minScore = input.int(2, "Minimum confluence score", minval=1, maxval=3, group=groupCore)
+requireCandlePattern = input.bool(false, "Require engulfing candle", group=groupCore)
+
+useOptionalExit = input.bool(false, "Use optional inferred exit", group=groupRisk)
+useOptionalSLTP = input.bool(false, "Use optional inferred SL/TP", group=groupRisk)
+slPercent = input.float(1.0, "Optional SL %", minval=0.1, step=0.1, group=groupRisk)
+tpPercent = input.float(2.0, "Optional TP %", minval=0.1, step=0.1, group=groupRisk)
+
+showStructure = input.bool(true, "Show structure levels", group=groupVisual)
+showSignals = input.bool(true, "Show signals", group=groupVisual)
+
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+trendLong = emaFast > emaSlow
+trendShort = emaFast < emaSlow
+
+structureHigh = ta.highest(high, structureLookback)[1]
+structureLow = ta.lowest(low, structureLookback)[1]
+structureLong = not na(structureHigh) and close > structureHigh
+structureShort = not na(structureLow) and close < structureLow
+
+bullishEngulfing = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+bearishEngulfing = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+longScore = (trendLong ? 1 : 0) + (structureLong ? 1 : 0) + (bullishEngulfing ? 1 : 0)
+shortScore = (trendShort ? 1 : 0) + (structureShort ? 1 : 0) + (bearishEngulfing ? 1 : 0)
+
+longPatternOk = not requireCandlePattern or bullishEngulfing
+shortPatternOk = not requireCandlePattern or bearishEngulfing
+
+var int lastLongSignalBar = na
+var int lastShortSignalBar = na
+allowLongSpacing = na(lastLongSignalBar) or bar_index - lastLongSignalBar >= minBarsBetweenSignals
+allowShortSpacing = na(lastShortSignalBar) or bar_index - lastShortSignalBar >= minBarsBetweenSignals
+
+buySignal = enableLong and longScore >= minScore and longPatternOk and allowLongSpacing
+sellSignal = enableShort and shortScore >= minScore and shortPatternOk and allowShortSpacing
+
+if useOptionalExit and strategy.position_size > 0 and shortScore >= minScore
+    strategy.close("Long")
+
+if useOptionalExit and strategy.position_size < 0 and longScore >= minScore
+    strategy.close("Short")
+
+if useOptionalSLTP and strategy.position_size > 0
+    strategy.exit("Long optional SLTP", "Long", stop=strategy.position_avg_price * (1 - slPercent / 100.0), limit=strategy.position_avg_price * (1 + tpPercent / 100.0))
+
+if useOptionalSLTP and strategy.position_size < 0
+    strategy.exit("Short optional SLTP", "Short", stop=strategy.position_avg_price * (1 + slPercent / 100.0), limit=strategy.position_avg_price * (1 - tpPercent / 100.0))
+
+if buySignal
+    strategy.entry("Long", strategy.long)
+    lastLongSignalBar := bar_index
+
+if sellSignal
+    strategy.entry("Short", strategy.short)
+    lastShortSignalBar := bar_index
+
+plot(emaFast, "Fast EMA", color=color.new(color.teal, 0))
+plot(emaSlow, "Slow EMA", color=color.new(color.orange, 0))
+plot(showStructure ? structureHigh : na, "Structure high", color=color.new(color.green, 45), style=plot.style_linebr)
+plot(showStructure ? structureLow : na, "Structure low", color=color.new(color.red, 45), style=plot.style_linebr)
+plotshape(showSignals and buySignal, title="Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="B")
+plotshape(showSignals and sellSignal, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="S")
+
+alertcondition(buySignal, title="LIB-STR005 Buy", message="LIB-STR005 manual-test buy signal")
+alertcondition(sellSignal, title="LIB-STR005 Sell", message="LIB-STR005 manual-test sell signal")

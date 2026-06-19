@@ -1,0 +1,378 @@
+//@version=6
+strategy(
+     title = "SMC الكمّي V1 — اختبار مستقل GBPUSD M15",
+     shorttitle = "SMC Quant V1",
+     overlay = true,
+     pyramiding = 0,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 1,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.0,
+     slippage = 0,
+     process_orders_on_close = true,
+     calc_on_every_tick = false,
+     max_boxes_count = 20,
+     max_labels_count = 100
+)
+
+// ============================================================================
+// ملاحظات التشغيل
+// ============================================================================
+// الزوج الأساسي المقترح في الوثيقة: GBP/USD
+// فريم التنفيذ لهذه النسخة: M15
+// سياق الاتجاه: H1
+// الفلاتر الإخبارية NFP/CPI/FOMC/BoE/ECB تُطبّق يدوياً من خصائص الاختبار.
+// لا يستخدم الكود أي بيانات مستقبلية lookahead.
+
+// ============================================================================
+// الإعدادات
+// ============================================================================
+groupCore = "1) الإعدادات الأساسية"
+swingLen       = input.int(3, "عدد شموع Swing يمين/يسار", minval = 1, group = groupCore)
+atrLen         = input.int(14, "ATR Length", minval = 1, group = groupCore)
+bosLookback    = input.int(20, "صلاحية الإعداد بعد BOS — شمعة M15", minval = 1, group = groupCore)
+obSearchBars   = input.int(12, "البحث عن آخر OB قبل BOS", minval = 1, maxval = 30, group = groupCore)
+fvgSearchBars  = input.int(5, "البحث عن FVG قرب BOS", minval = 0, maxval = 15, group = groupCore)
+
+groupRules = "2) ثوابت القواعد من الاستراتيجية"
+bosAtrMult     = input.float(1.2, "قوة displacement لـ BOS × ATR", minval = 0.1, step = 0.1, group = groupRules)
+obBodyAtrMult  = input.float(0.4, "أقل جسم شمعة OB × ATR", minval = 0.1, step = 0.1, group = groupRules)
+maxFvgDistance = input.float(1.5, "أقصى مسافة OB عن FVG × ATR", minval = 0.0, step = 0.1, group = groupRules)
+slAtrMult      = input.float(1.1, "وقف ATR ×", minval = 0.1, step = 0.1, group = groupRules)
+tp1RR          = input.float(1.0, "الهدف الأول R", minval = 0.1, step = 0.1, group = groupRules)
+tp2RR          = input.float(3.0, "الهدف الثاني R", minval = 0.5, step = 0.1, group = groupRules)
+
+groupRisk = "3) التنفيذ وإدارة الصفقة"
+pipManual      = input.float(0.0, "قيمة النقطة يدوياً — 0 = تلقائي", minval = 0.0, step = 0.00001, group = groupRisk)
+stopBufferPips = input.float(2.0, "هامش الوقف خلف OB — نقاط Pip", minval = 0.0, step = 0.1, group = groupRisk)
+beBufferPips   = input.float(2.0, "هامش نقطة التعادل بعد TP1 — نقاط Pip", minval = 0.0, step = 0.1, group = groupRisk)
+useSession     = input.bool(false, "تفعيل فلتر جلسات التداول الاختياري", group = groupRisk)
+tradeSession   = input.session("0700-1530:23456", "جلسة التنفيذ GMT — London/NY", group = groupRisk)
+sessionTz      = input.string("GMT+0", "المنطقة الزمنية للجلسة", group = groupRisk)
+
+groupVol = "4) فلتر التذبذب H1"
+minVolRatio    = input.float(0.0008, "أقل ATR(H1) / EMA50(H1)", step = 0.0001, group = groupVol)
+maxVolRatio    = input.float(0.0030, "أعلى ATR(H1) / EMA50(H1)", step = 0.0001, group = groupVol)
+
+groupView = "5) العرض"
+showZones      = input.bool(true, "إظهار نطاقات OB / FVG", group = groupView)
+showSignals    = input.bool(true, "إظهار الإشارات", group = groupView)
+showPanel      = input.bool(true, "إظهار لوحة الاختبار", group = groupView)
+
+// ============================================================================
+// أدوات مساعدة
+// ============================================================================
+pip = pipManual > 0 ? pipManual : syminfo.mintick * 10.0
+atr = ta.atr(atrLen)
+isM15 = timeframe.isminutes and timeframe.multiplier == 15
+sessionAllowed = not useSession or not na(time(timeframe.period, tradeSession, sessionTz))
+
+f_structureDirection(_swingLen, _atrLen, _bosAtrMult) =>
+    _atr = ta.atr(_atrLen)
+    _ph = ta.pivothigh(high, _swingLen, _swingLen)
+    _pl = ta.pivotlow(low, _swingLen, _swingLen)
+
+    var float _lastHigh = na
+    var float _lastLow = na
+    var float _prevHigh = na
+    var float _prevLow = na
+    var int _direction = 0
+
+    if not na(_ph)
+        _prevHigh := _lastHigh
+        _lastHigh := _ph
+
+    if not na(_pl)
+        _prevLow := _lastLow
+        _lastLow := _pl
+
+    _bullBreak = not na(_lastHigh) and not na(_lastLow) and not na(_prevLow) and close > _lastHigh and close[1] <= _lastHigh and _lastLow > _prevLow
+    _bearBreak = not na(_lastLow) and not na(_lastHigh) and not na(_prevHigh) and close < _lastLow and close[1] >= _lastLow and _lastHigh < _prevHigh
+    _displacement = math.abs(close - open[2]) >= _bosAtrMult * _atr
+
+    if _bullBreak and _displacement
+        _direction := 1
+    if _bearBreak and _displacement
+        _direction := -1
+
+    _direction
+
+// ============================================================================
+// سياق H1: EMA50/EMA200 + آخر BOS
+// ============================================================================
+h1Ema50  = request.security(syminfo.tickerid, "60", ta.ema(close, 50), barmerge.gaps_off, barmerge.lookahead_off)
+h1Ema200 = request.security(syminfo.tickerid, "60", ta.ema(close, 200), barmerge.gaps_off, barmerge.lookahead_off)
+h1Atr    = request.security(syminfo.tickerid, "60", ta.atr(atrLen), barmerge.gaps_off, barmerge.lookahead_off)
+h1BosDir = request.security(syminfo.tickerid, "60", f_structureDirection(swingLen, atrLen, bosAtrMult), barmerge.gaps_off, barmerge.lookahead_off)
+
+volRatio = h1Atr / h1Ema50
+volAllowed = volRatio >= minVolRatio and volRatio <= maxVolRatio
+bullBias = h1Ema50 > h1Ema200 and h1BosDir == 1
+bearBias = h1Ema50 < h1Ema200 and h1BosDir == -1
+
+// ============================================================================
+// بنية M15: Swing + BOS وفق التعريف العددي
+// ============================================================================
+pivotHigh = ta.pivothigh(high, swingLen, swingLen)
+pivotLow  = ta.pivotlow(low, swingLen, swingLen)
+
+var float lastSwingHigh = na
+var float prevSwingHigh = na
+var float lastSwingLow  = na
+var float prevSwingLow  = na
+
+if not na(pivotHigh)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := pivotHigh
+
+if not na(pivotLow)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := pivotLow
+
+displacement = math.abs(close - open[2]) >= bosAtrMult * atr
+bullBos = not na(lastSwingHigh) and not na(lastSwingLow) and not na(prevSwingLow) and ta.crossover(close, lastSwingHigh) and lastSwingLow > prevSwingLow and displacement
+bearBos = not na(lastSwingLow) and not na(lastSwingHigh) and not na(prevSwingHigh) and ta.crossunder(close, lastSwingLow) and lastSwingHigh < prevSwingHigh and displacement
+
+// ============================================================================
+// تخزين الإعداد الصاعد: OB + FVG القريب منه
+// ============================================================================
+var bool bullSetupActive = false
+var float bullObLow = na
+var float bullObHigh = na
+var float bullFvgLow = na
+var float bullFvgHigh = na
+var float bullZoneLow = na
+var float bullZoneHigh = na
+var int bullSetupBar = na
+
+if bullBos
+    float foundObLow = na
+    float foundObHigh = na
+    float foundFvgLow = na
+    float foundFvgHigh = na
+
+    for i = 1 to obSearchBars
+        bearishCandle = close[i] < open[i]
+        validBody = math.abs(close[i] - open[i]) >= obBodyAtrMult * atr[i]
+        if na(foundObLow) and bearishCandle and validBody
+            foundObLow := low[i]
+            foundObHigh := open[i]
+
+    for i = 0 to fvgSearchBars
+        validBullFvg = low[i] > high[i + 2]
+        if na(foundFvgLow) and validBullFvg
+            foundFvgLow := high[i + 2]
+            foundFvgHigh := low[i]
+
+    zonesExist = not na(foundObLow) and not na(foundFvgLow)
+    zoneGap = zonesExist ? math.max(foundFvgLow - foundObHigh, foundObLow - foundFvgHigh, 0.0) : na
+    zonesNear = zonesExist and zoneGap <= maxFvgDistance * atr
+
+    if zonesNear
+        bullObLow := foundObLow
+        bullObHigh := foundObHigh
+        bullFvgLow := foundFvgLow
+        bullFvgHigh := foundFvgHigh
+        bullZoneLow := math.min(foundObLow, foundFvgLow)
+        bullZoneHigh := math.max(foundObHigh, foundFvgHigh)
+        bullSetupBar := bar_index
+        bullSetupActive := true
+
+// ============================================================================
+// تخزين الإعداد الهابط: OB + FVG القريب منه
+// ============================================================================
+var bool bearSetupActive = false
+var float bearObLow = na
+var float bearObHigh = na
+var float bearFvgLow = na
+var float bearFvgHigh = na
+var float bearZoneLow = na
+var float bearZoneHigh = na
+var int bearSetupBar = na
+
+if bearBos
+    float foundObLow = na
+    float foundObHigh = na
+    float foundFvgLow = na
+    float foundFvgHigh = na
+
+    for i = 1 to obSearchBars
+        bullishCandle = close[i] > open[i]
+        validBody = math.abs(close[i] - open[i]) >= obBodyAtrMult * atr[i]
+        if na(foundObLow) and bullishCandle and validBody
+            foundObLow := open[i]
+            foundObHigh := high[i]
+
+    for i = 0 to fvgSearchBars
+        validBearFvg = high[i] < low[i + 2]
+        if na(foundFvgLow) and validBearFvg
+            foundFvgLow := high[i]
+            foundFvgHigh := low[i + 2]
+
+    zonesExist = not na(foundObLow) and not na(foundFvgLow)
+    zoneGap = zonesExist ? math.max(foundFvgLow - foundObHigh, foundObLow - foundFvgHigh, 0.0) : na
+    zonesNear = zonesExist and zoneGap <= maxFvgDistance * atr
+
+    if zonesNear
+        bearObLow := foundObLow
+        bearObHigh := foundObHigh
+        bearFvgLow := foundFvgLow
+        bearFvgHigh := foundFvgHigh
+        bearZoneLow := math.min(foundObLow, foundFvgLow)
+        bearZoneHigh := math.max(foundObHigh, foundFvgHigh)
+        bearSetupBar := bar_index
+        bearSetupActive := true
+
+// ============================================================================
+// إلغاء الإعداد: تجاوز العمر أو إغلاق يتخطى 50% من OB عكسياً
+// ============================================================================
+bullObMid = (bullObLow + bullObHigh) / 2.0
+bearObMid = (bearObLow + bearObHigh) / 2.0
+
+bullExpired = bullSetupActive and bar_index - bullSetupBar > bosLookback
+bearExpired = bearSetupActive and bar_index - bearSetupBar > bosLookback
+bullInvalid = bullSetupActive and close < bullObMid
+bearInvalid = bearSetupActive and close > bearObMid
+
+if bullExpired or bullInvalid
+    bullSetupActive := false
+
+if bearExpired or bearInvalid
+    bearSetupActive := false
+
+// ============================================================================
+// Trigger M15: لمس OB/FVG + شمعة رفض كما في القاعدة
+// ============================================================================
+barRange = high - low
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+validRange = barRange > 0
+
+bullTouch = bullSetupActive and low <= bullZoneHigh and high >= bullZoneLow
+bearTouch = bearSetupActive and high >= bearZoneLow and low <= bearZoneHigh
+
+bullReject = validRange and close > open and upperWick < 0.30 * barRange and lowerWick >= 0.50 * barRange
+bearReject = validRange and close < open and lowerWick < 0.30 * barRange and upperWick >= 0.50 * barRange
+
+flat = strategy.position_size == 0
+longSignal  = flat and bullBias and volAllowed and sessionAllowed and bullTouch and bullReject
+shortSignal = flat and bearBias and volAllowed and sessionAllowed and bearTouch and bearReject
+
+// ============================================================================
+// الأوامر وإدارة المخاطر: SL الأبعد من ATR أو OB + TP1/TP2
+// ============================================================================
+var float longEntry = na
+var float longStop = na
+var float longTp1 = na
+var float longTp2 = na
+var bool longTp1Touched = false
+
+var float shortEntry = na
+var float shortStop = na
+var float shortTp1 = na
+var float shortTp2 = na
+var bool shortTp1Touched = false
+
+if longSignal
+    longEntry := close
+    atrStop = longEntry - slAtrMult * atr
+    obStop = bullObLow - stopBufferPips * pip
+    longStop := math.min(atrStop, obStop)
+    risk = longEntry - longStop
+    longTp1 := longEntry + tp1RR * risk
+    longTp2 := longEntry + tp2RR * risk
+    longTp1Touched := false
+    strategy.entry("شراء SMC", strategy.long)
+    bullSetupActive := false
+
+if shortSignal
+    shortEntry := close
+    atrStop = shortEntry + slAtrMult * atr
+    obStop = bearObHigh + stopBufferPips * pip
+    shortStop := math.max(atrStop, obStop)
+    risk = shortStop - shortEntry
+    shortTp1 := shortEntry - tp1RR * risk
+    shortTp2 := shortEntry - tp2RR * risk
+    shortTp1Touched := false
+    strategy.entry("بيع SMC", strategy.short)
+    bearSetupActive := false
+
+if strategy.position_size > 0
+    if high >= longTp1
+        longTp1Touched := true
+    activeLongStop = longTp1Touched ? math.max(longStop, longEntry + beBufferPips * pip) : longStop
+    strategy.exit("شراء TP1", from_entry = "شراء SMC", stop = longStop, limit = longTp1, qty_percent = 50)
+    strategy.exit("شراء TP2", from_entry = "شراء SMC", stop = activeLongStop, limit = longTp2, qty_percent = 50)
+
+if strategy.position_size < 0
+    if low <= shortTp1
+        shortTp1Touched := true
+    activeShortStop = shortTp1Touched ? math.min(shortStop, shortEntry - beBufferPips * pip) : shortStop
+    strategy.exit("بيع TP1", from_entry = "بيع SMC", stop = shortStop, limit = shortTp1, qty_percent = 50)
+    strategy.exit("بيع TP2", from_entry = "بيع SMC", stop = activeShortStop, limit = shortTp2, qty_percent = 50)
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    longEntry := na
+    longStop := na
+    longTp1 := na
+    longTp2 := na
+    longTp1Touched := false
+    shortEntry := na
+    shortStop := na
+    shortTp1 := na
+    shortTp2 := na
+    shortTp1Touched := false
+
+// ============================================================================
+// العرض البصري
+// ============================================================================
+plot(h1Ema50, "EMA50 H1", color = color.new(color.teal, 0), linewidth = 1)
+plot(h1Ema200, "EMA200 H1", color = color.new(color.orange, 0), linewidth = 1)
+
+pBullLow = plot(showZones and bullSetupActive ? bullZoneLow : na, "منطقة شراء أدنى", color = color.new(color.lime, 0), style = plot.style_linebr)
+pBullHigh = plot(showZones and bullSetupActive ? bullZoneHigh : na, "منطقة شراء أعلى", color = color.new(color.lime, 0), style = plot.style_linebr)
+fill(pBullLow, pBullHigh, color = color.new(color.lime, 86), title = "منطقة OB/FVG شراء")
+
+pBearLow = plot(showZones and bearSetupActive ? bearZoneLow : na, "منطقة بيع أدنى", color = color.new(color.red, 0), style = plot.style_linebr)
+pBearHigh = plot(showZones and bearSetupActive ? bearZoneHigh : na, "منطقة بيع أعلى", color = color.new(color.red, 0), style = plot.style_linebr)
+fill(pBearLow, pBearHigh, color = color.new(color.red, 86), title = "منطقة OB/FVG بيع")
+
+plotshape(showSignals and bullBos, title = "BOS صاعد", text = "BOS↑", style = shape.labelup, location = location.belowbar, color = color.new(color.green, 0), textcolor = color.white, size = size.tiny)
+plotshape(showSignals and bearBos, title = "BOS هابط", text = "BOS↓", style = shape.labeldown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, size = size.tiny)
+plotshape(showSignals and longSignal, title = "دخول شراء", text = "شراء", style = shape.triangleup, location = location.belowbar, color = color.new(color.lime, 0), textcolor = color.black, size = size.small)
+plotshape(showSignals and shortSignal, title = "دخول بيع", text = "بيع", style = shape.triangledown, location = location.abovebar, color = color.new(color.red, 0), textcolor = color.white, size = size.small)
+
+plot(strategy.position_size > 0 ? longStop : strategy.position_size < 0 ? shortStop : na, "وقف الخسارة", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+plot(strategy.position_size > 0 ? longTp1 : strategy.position_size < 0 ? shortTp1 : na, "TP1", color = color.new(color.yellow, 0), style = plot.style_linebr)
+plot(strategy.position_size > 0 ? longTp2 : strategy.position_size < 0 ? shortTp2 : na, "TP2", color = color.new(color.green, 0), linewidth = 2, style = plot.style_linebr)
+
+// ============================================================================
+// لوحة فحص سريعة
+// ============================================================================
+var table dash = table.new(position.top_right, 2, 8, border_width = 1)
+
+if barstate.islast and showPanel
+    biasText = bullBias ? "صاعد" : bearBias ? "هابط" : "لا يوجد"
+    biasColor = bullBias ? color.lime : bearBias ? color.red : color.silver
+    setupText = bullSetupActive ? "شراء جاهز" : bearSetupActive ? "بيع جاهز" : "لا يوجد"
+    tfText = isM15 ? "M15 ✓" : "استخدم M15"
+    table.cell(dash, 0, 0, "SMC الكمّي", bgcolor = color.new(color.blue, 75), text_color = color.white)
+    table.cell(dash, 1, 0, "V1", bgcolor = color.new(color.blue, 75), text_color = color.white)
+    table.cell(dash, 0, 1, "الفريم")
+    table.cell(dash, 1, 1, tfText, text_color = isM15 ? color.lime : color.orange)
+    table.cell(dash, 0, 2, "اتجاه H1")
+    table.cell(dash, 1, 2, biasText, text_color = biasColor)
+    table.cell(dash, 0, 3, "فلتر التذبذب")
+    table.cell(dash, 1, 3, volAllowed ? "مسموح" : "مرفوض", text_color = volAllowed ? color.lime : color.red)
+    table.cell(dash, 0, 4, "الإعداد")
+    table.cell(dash, 1, 4, setupText)
+    table.cell(dash, 0, 5, "الصفقات")
+    table.cell(dash, 1, 5, str.tostring(strategy.closedtrades))
+    table.cell(dash, 0, 6, "الصافي")
+    table.cell(dash, 1, 6, str.tostring(strategy.netprofit, "#.##"))
+    table.cell(dash, 0, 7, "فلتر الجلسة")
+    table.cell(dash, 1, 7, useSession ? "مفعّل" : "غير مفعّل")
+
+// تنبيه بصري فقط؛ التنبيهات لا تؤثر على الباكتيست.
+bgcolor(not isM15 ? color.new(color.orange, 90) : na, title = "تنبيه: الفريم ليس M15")

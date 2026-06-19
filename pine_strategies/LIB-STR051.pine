@@ -1,0 +1,120 @@
+//@version=6
+strategy("LIB-STR051 - 850077390-CRT-Professional-Guide-Preview - Inferred Research Draft / مسودة بحثية مستنتجة", overlay=true)
+
+// Research Draft / مسودة بحثية:
+// This script is created for educational research and initial backtesting only.
+// تم إنشاء هذا السكربت لأغراض البحث التعليمي والباك تست الأولي فقط.
+//
+// This is not financial advice or a trading recommendation.
+// هذا ليس نصيحة مالية أو توصية تداول.
+//
+// Rule confidence labels:
+// علامات درجة اليقين للقواعد:
+// [Confirmed / مؤكد] = clearly stated in the source.
+// [Inferred / مستنتج] = logically derived from the source or example.
+// [Unclear / غير واضح] = not used as executable logic.
+//
+// Missing exits, stop loss, take profit, or risk rules are not presented as confirmed source rules.
+// لا يتم تقديم شروط الخروج أو وقف الخسارة أو جني الأرباح أو إدارة المخاطر الناقصة كقواعد مؤكدة من المصدر.
+//
+// Backtest results may be incomplete or misleading until unclear rules are reviewed.
+// قد تكون نتائج الباك تست غير مكتملة أو مضللة حتى تتم مراجعة القواعد غير الواضحة.
+
+// 1. Strategy information / معلومات الاستراتيجية
+// [Confirmed / مؤكد] رقم الاستراتيجية: LIB-STR051
+// [Confirmed / مؤكد] اسم الاستراتيجية: 850077390-CRT-Professional-Guide-Preview
+// [Confirmed / مؤكد] مستوى التحويل: inferred_research_draft
+
+// 2. Confirmed rules / القواعد المؤكدة
+// [Confirmed / مؤكد] نوع الاستراتيجية في الفهرس: اتجاهية.
+// [Confirmed / مؤكد] السوق المذكور: فوركس، مؤشرات، كريبتو.
+// [Confirmed / مؤكد] الإطار الزمني المذكور: 15 دقيقة، 1 ساعة، 4 ساعات، يومي، جلسات.
+// [Confirmed / مؤكد] المؤشرات أو الأدوات المذكورة: CRT، Fair Value Gap، Liquidity، Market Structure، Candlestick Patterns، Chart Patterns، Risk Management.
+// [Confirmed / مؤكد] حالة وجود قواعد دخول/خروج في خريطة المحتوى: PDF111: نعم.
+// [Confirmed / مؤكد] التقييم السابق للتحويل إلى Pine Script v6: 2/5.
+
+// 3. Inferred rules / القواعد المستنتجة
+// [Inferred / مستنتج] جزء من المنطق أدناه مستنتج من المواصفة البحثية.
+// [Inferred / مستنتج] تمثيل Fair Value Gap من فجوات ثلاث شمعات واستخدام العودة إليها كمسودة دخول. سبب الاستنتاج: FVG مذكور، لكن قواعد صلاحية الفجوة والدخول منها غير مفصلة.
+// [Inferred / مستنتج] تمثيل سحب السيولة بكسر قمة/قاع حديث ثم إغلاق عكسي كمسودة شراء أو بيع. سبب الاستنتاج: Liquidity مذكورة، لكن تعريف السحب أو التجميع غير مفصل.
+// [Inferred / مستنتج] استخدام كسر/تحول هيكل السوق كمرشح اتجاهي؛ شراء بعد تحول صاعد وبيع بعد تحول هابط. سبب الاستنتاج: هذه مفاهيم مذكورة، لكن قواعد BOS/CHOCH/CRT الرقمية غير مفصلة.
+// [Inferred / مستنتج] تمثيل نماذج شموع OHLC مختارة كمرشحات دخول اتجاهية أو انعكاسية. سبب الاستنتاج: وجود نماذج الشموع مذكور، لكن أسماء النماذج المطلوبة غير مذكورة.
+// [Inferred / مستنتج] تمثيل اختراق نماذج سعرية مختارة من القمم والقيعان كمسودة دخول. سبب الاستنتاج: وجود نماذج chart patterns مذكور، لكن النموذج المحدد وقواعده غير مذكورين.
+
+// 4. Unclear or disabled rules / القواعد غير الواضحة أو غير المفعلة
+// [Unclear / غير واضح] شروط دخول الشراء النصية غير مفصلة في خريطة المحتوى.
+// [Unclear / غير واضح] شروط دخول البيع النصية غير مفصلة في خريطة المحتوى.
+// [Unclear / غير واضح] شروط الخروج غير مفصلة في خريطة المحتوى.
+// [Unclear / غير واضح] إعدادات المؤشرات والفترات غير مذكورة بوضوح.
+// [Unclear / غير واضح] وقف الخسارة وجني الأرباح غير مذكورين بوضوح.
+// [Unclear / غير واضح] التعريفات الرقمية للعناصر البصرية/التقديرية غير محددة: العناصر البصرية أو التقديرية المذكورة/المحتملة: Market Structure، Fair Value Gap، Liquidity، Candlestick Patterns، Chart Patterns، CRT.
+
+// 5. Inputs / المدخلات
+enableLong = input.bool(true, "Enable Long / تفعيل الشراء")
+enableShort = input.bool(true, "Enable Short / تفعيل البيع")
+minBarsBetweenSignals = input.int(5, "Minimum bars between signals / حد أدنى بين الإشارات", minval=0)
+useOptionalExit = input.bool(false, "Use optional inferred exit / استخدام خروج اختياري مستنتج")
+useOptionalSLTP = input.bool(false, "Use optional inferred SL/TP / استخدام وقف وهدف اختياري مستنتج")
+slPercent = input.float(1.0, "Optional SL % / نسبة وقف اختيارية", minval=0.1, step=0.1)
+tpPercent = input.float(2.0, "Optional TP % / نسبة هدف اختيارية", minval=0.1, step=0.1)
+liquidityLookback = input.int(20, "Liquidity Lookback / نافذة السيولة", minval=5)
+structureLookback = input.int(20, "Structure Lookback / نافذة الهيكل", minval=5)
+
+// 6. Calculations / الحسابات
+recentHigh = ta.highest(high, 20)
+recentLow = ta.lowest(low, 20)
+liqSweepBull = low < ta.lowest(low, liquidityLookback)[1] and close > open
+liqSweepBear = high > ta.highest(high, liquidityLookback)[1] and close < open
+fvgBull = low > high[2]
+fvgBear = high < low[2]
+fvgRetestLong = fvgBull and low <= high[2]
+fvgRetestShort = fvgBear and high >= low[2]
+structureHigh = ta.highest(high, structureLookback)[1]
+structureLow = ta.lowest(low, structureLookback)[1]
+structureLong = close > structureHigh
+structureShort = close < structureLow
+bullishEngulfing = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+bearishEngulfing = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+// 7. Buy conditions / شروط الشراء
+longScore = (liqSweepBull ? 1 : 0) + (fvgRetestLong ? 1 : 0) + (structureLong ? 1 : 0) + (bullishEngulfing ? 1 : 0)
+shortScore = (liqSweepBear ? 1 : 0) + (fvgRetestShort ? 1 : 0) + (structureShort ? 1 : 0) + (bearishEngulfing ? 1 : 0)
+threshold = math.max(1, int(math.ceil(4 * 0.4)))
+buyConditionRaw = longScore >= threshold
+sellConditionRaw = shortScore >= threshold
+var int lastLongSignalBar = na
+var int lastShortSignalBar = na
+allowLongSpacing = na(lastLongSignalBar) or bar_index - lastLongSignalBar >= minBarsBetweenSignals
+allowShortSpacing = na(lastShortSignalBar) or bar_index - lastShortSignalBar >= minBarsBetweenSignals
+buyCondition = enableLong and buyConditionRaw and allowLongSpacing
+sellCondition = enableShort and sellConditionRaw and allowShortSpacing
+
+// 8. Sell conditions / شروط البيع
+// sellCondition is calculated above alongside buyCondition.
+
+// 9. Exit logic / منطق الخروج
+// [Unclear / غير واضح] لا يوجد خروج مؤكد من المصدر. الخروج الاختياري فقط عند تفعيله يدويًا.
+optionalExitLong = longScore < threshold
+optionalExitShort = shortScore < threshold
+if useOptionalExit and strategy.position_size > 0 and optionalExitLong
+    strategy.close("Long")
+if useOptionalExit and strategy.position_size < 0 and optionalExitShort
+    strategy.close("Short")
+if useOptionalSLTP and strategy.position_size > 0
+    strategy.exit("L-Opt-SLTP", "Long", stop=strategy.position_avg_price * (1 - slPercent / 100.0), limit=strategy.position_avg_price * (1 + tpPercent / 100.0))
+if useOptionalSLTP and strategy.position_size < 0
+    strategy.exit("S-Opt-SLTP", "Short", stop=strategy.position_avg_price * (1 + slPercent / 100.0), limit=strategy.position_avg_price * (1 - tpPercent / 100.0))
+
+// 10. Orders / أوامر التداول
+if buyCondition
+    strategy.entry("Long", strategy.long)
+    lastLongSignalBar := bar_index
+if sellCondition
+    strategy.entry("Short", strategy.short)
+    lastShortSignalBar := bar_index
+
+// 11. Plots and alerts / الرسوم والتنبيهات
+plotshape(buyCondition, title="Buy", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="B")
+plotshape(sellCondition, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="S")
+alertcondition(buyCondition, title="LIB-STR051 Buy", message="LIB-STR051 inferred buy condition triggered")
+alertcondition(sellCondition, title="LIB-STR051 Sell", message="LIB-STR051 inferred sell condition triggered")
