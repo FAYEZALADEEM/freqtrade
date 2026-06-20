@@ -15,15 +15,22 @@
 | 11 | strategy_11_one_hour_forex_reversal.pine | 1-Hour Forex Reversal Strategy | نعم | نعم | نعم | نعم | نعم | نعم | نعم | نعم | قواعد الشراء عكسية برمجيًا لأن التقرير ذكر البيع أساسًا. |
 | 12 | strategy_12_rsi_divergence_reversal.pine | RSI Divergence Reversal | نعم | نعم | نعم | نعم | نعم | نعم | نعم | نعم | divergence وCHoCH مبسطان باستخدام pivots مؤكدة فقط. |
 
-## نتيجة التحقق
+## نتيجة التحقق (محدثة - 2026-06-19)
 
-- كل الملفات تبدأ بـ `//@version=6`.
-- كل الملفات تستخدم `strategy()` ولا تستخدم `indicator()`.
-- كل الملفات تحتوي إعدادات عربية مرقمة ومرفقة بـ `tooltip`.
-- كل الملفات تحتوي تفعيل/تعطيل منفصل للشراء والبيع.
-- فلتر الجلسة معطل افتراضيًا في كل الملفات.
-- كل الملفات تحتوي `plotshape()` لإشارات الشراء والبيع.
-- كل الملفات تحتوي `alertcondition()` للشراء والبيع.
-- كل الملفات تحتوي `strategy.entry()` و`strategy.exit()` مع وقف وهدف.
-- لم يتم استخدام `barstate.islast` أو `lookahead_on`.
-- لا توجد ملفات Python أو Backtest Python ضمن هذا العمل.
+**ملاحظة هامة:** هذا التقرير الأصلي كان جزئياً. بعد فحص شامل لكل الـ 113 ملف، تم اكتشاف الاستثناءات التالية:
+
+- **إصدار Pine:** 112 ملف تبدأ بـ `//@version=6`.  
+  **استثناء:** `PMax_Explorer_Arabic.pine` لا يزال على `//@version=4`.
+- **نوع الملف:** 110 ملف تستخدم `strategy()`.  
+  **3 ملفات مؤشرات فقط** (لا تصلح كاستراتيجيات تداول رئيسية):
+  - Market_Fluidity_Smart.pine
+  - Market_Fluidity_Smart_SRC_fixed_v2.pine
+  - Mean_Reversion_ZScore_Indicator_V1_1_EURUSD_M15_Pine_v6.pine
+- 18 ملف لا تزال تستخدم الدالة القديمة `security()` (يجب تحديثها إلى `request.security()`).
+- 13 ملف تحتوي على أنماط محتملة لـ `barstate.islast` أو مشابهة (تحتاج فحص lookahead).
+- ملف واحد يستخدم `strategy.entry(..., when=...)` (مهمل).
+- معظم الملفات تحتوي مجموعات عربية + `tooltip` + تفعيل/تعطيل منفصل + `plotshape()` + `alertcondition()`.
+
+**راجع التقرير المفصل الكامل:** `reports/pine_migration_issues.md` (يحتوي على قوائم كاملة + اقتراحات إصلاح).
+
+**الادعاءات الأصلية أدناه لم تعد دقيقة 100%.**

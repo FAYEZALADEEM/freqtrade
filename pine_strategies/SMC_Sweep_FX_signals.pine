@@ -1,0 +1,40 @@
+//@version=6
+// =============================================================
+// SMC_Sweep_FX — مؤشر إشارات نظيف (بدون رسم الصفقات السابقة)
+// يعرض فقط: خطوط القاع/القمة + علامة دخول/خروج لحظة حدوثها + تنبيهات.
+// نفس منطق البطل المُختبَر (n=40). الأنسب: EUR/USD, AUD/USD, GBP/USD على 1h.
+// =============================================================
+indicator("SMC_Sweep_FX — إشارات", overlay = true)
+
+// ----------------------- المدخلات (tooltip عربي بجانب كل إعداد) -----------------------
+swingLb  = input.int(40, "عمق السيولة n",
+     tooltip = "عدد الشموع للبحث عن أدنى قاع متأرجح. n=40 = الأمتن (اجتاز OOS). أصغر = إشارات أكثر وأقل جودة.")
+rsiEntry = input.int(50, "حدّ RSI للدخول",
+     tooltip = "نشتري فقط حين RSI أقل من هذا الحد — لتجنّب الشراء الزائد. 50 = محايد.")
+rsiExit  = input.int(65, "حدّ RSI للخروج",
+     tooltip = "إشارة خروج حين يرتفع RSI فوق هذا الحد — أو عند بلوغ القمة المتأرجحة.")
+showZones = input.bool(true, "إظهار خطوط القاع/القمة",
+     tooltip = "رسم القاع المتأرجح (أحمر) والقمة المتأرجحة (أخضر) المستخدمَين في الإشارات.")
+
+// ----------------------- المؤشرات -----------------------
+rsi = ta.rsi(close, 14)
+// تستبعد الشمعة الحالية ([1]) لمنع تسرّب المستقبل (مطابق shift(1))
+swingLow  = ta.lowest(low,  swingLb)[1]
+swingHigh = ta.highest(high, swingLb)[1]
+
+// ----------------------- الإشارات -----------------------
+longSignal = (low < swingLow) and (close > swingLow) and (close > open) and (rsi < rsiEntry)
+exitSignal = (close >= swingHigh) or (rsi > rsiExit)
+
+// ----------------------- الرسم -----------------------
+plot(showZones ? swingLow  : na, "القاع المتأرجح", color = color.new(color.red,   50))
+plot(showZones ? swingHigh : na, "القمة المتأرجحة", color = color.new(color.green, 50))
+
+plotshape(longSignal, "إشارة دخول", style = shape.triangleup, location = location.belowbar,
+     color = color.new(color.green, 0), size = size.small, text = "دخول", textcolor = color.white)
+plotshape(exitSignal, "إشارة خروج", style = shape.triangledown, location = location.abovebar,
+     color = color.new(color.red, 20), size = size.tiny)
+
+// ----------------------- تنبيهات حيّة -----------------------
+alertcondition(longSignal, "دخول SMC", "إشارة كنس سيولة — دخول شراء")
+alertcondition(exitSignal, "خروج SMC", "إشارة خروج SMC")

@@ -1,0 +1,79 @@
+//@version=6
+// =============================================================
+// SMC_Sweep_FX — نسخة مؤشر (Indicator) لعرض الصفقات بصرياً على الشارت
+// يعيد حساب نفس منطق البطل المُختبَر (n=40) ويرسم كل صفقة محاكاة:
+//   سهم دخول أخضر ← خط الصفقة ← سهم خروج، ملوّن ربح/خسارة، مع tooltip تفصيلي.
+// ليس استراتيجية تنفيذ — أداة معاينة بصرية فقط (overlay على الشارت).
+// الأنسب: EUR/USD, AUD/USD, GBP/USD على فريم 1h.
+// =============================================================
+indicator("SMC_Sweep_FX — مؤشر معاينة الصفقات", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ----------------------- المدخلات (مع tooltip عربي بجانب كل إعداد) -----------------------
+swingLb  = input.int(40, "عمق السيولة n",
+     tooltip = "عدد الشموع للبحث عن أدنى قاع متأرجح. n=40 = سيولة صمدت ~40 ساعة (الأمتن، اجتاز OOS). أصغر = صفقات أكثر وأقل جودة.")
+rsiLen   = input.int(14, "طول RSI",
+     tooltip = "فترة حساب مؤشر القوة النسبية. القيمة القياسية 14.")
+rsiEntry = input.int(50, "حدّ RSI للدخول",
+     tooltip = "نشتري فقط حين RSI أقل من هذا الحد — لتجنّب الدخول في منطقة شراء زائد. 50 = محايد.")
+rsiExit  = input.int(65, "حدّ RSI للخروج",
+     tooltip = "نخرج حين يرتفع RSI فوق هذا الحد (زخم صاعد نضج) — أو عند بلوغ القمة المتأرجحة.")
+slPct    = input.float(2.5, "وقف الخسارة %", step = 0.1,
+     tooltip = "مسافة الوقف من سعر الدخول. الانعكاس يحتاج وقفاً واسعاً (2.5%) لينجو من إعادة اختبار القاع.")
+tpPct    = input.float(2.0, "الهدف الواقي %", step = 0.1,
+     tooltip = "هدف ربح احتياطي. الخروج الأساسي يكون عند القمة المتأرجحة أو RSI، وهذا حماية إضافية.")
+showZones = input.bool(true, "إظهار خطوط القاع/القمة",
+     tooltip = "رسم خطّي القاع المتأرجح (أحمر) والقمة المتأرجحة (أخضر) المستخدمَين في الإشارات.")
+
+// ----------------------- المؤشرات -----------------------
+rsi = ta.rsi(close, rsiLen)
+// قاع/قمة متأرجحة تستبعد الشمعة الحالية ([1]) لمنع تسرّب المستقبل (مطابق shift(1))
+swingLow  = ta.lowest(low,  swingLb)[1]
+swingHigh = ta.highest(high, swingLb)[1]
+
+// ----------------------- الإشارات (نفس منطق البطل) -----------------------
+longSignal = (low < swingLow) and (close > swingLow) and (close > open) and (rsi < rsiEntry)
+exitSignal = (close >= swingHigh) or (rsi > rsiExit)
+
+// ----------------------- محاكاة الصفقات (خانة واحدة في كل مرة) -----------------------
+var bool  inTrade   = false
+var float entryPrice = na
+var int   entryBar   = na
+var float slLevel    = na
+var float tpLevel     = na
+
+// دخول
+if longSignal and not inTrade
+    inTrade   := true
+    entryPrice := close
+    entryBar   := bar_index
+    slLevel    := close * (1 - slPct / 100.0)
+    tpLevel    := close * (1 + tpPct / 100.0)
+    label.new(bar_index, low, "▲ دخول", color = color.new(color.green, 20),
+         style = label.style_label_up, textcolor = color.white, size = size.small,
+         tooltip = "دخول كنس سيولة\nالسعر: " + str.tostring(close, format.mintick))
+
+// أسباب الخروج
+hitSL   = inTrade and low  <= slLevel
+hitTP   = inTrade and high >= tpLevel
+sigExit = inTrade and exitSignal
+
+if inTrade and (hitSL or hitTP or sigExit)
+    float exitPrice = hitSL ? slLevel : hitTP ? tpLevel : close
+    float pnlPct    = (exitPrice - entryPrice) / entryPrice * 100.0
+    bool  win       = pnlPct > 0
+    string reason   = hitSL ? "وقف خسارة" : hitTP ? "هدف واقٍ" : "قمة/RSI"
+    // خط الصفقة من الدخول للخروج ملوّن ربح/خسارة
+    line.new(entryBar, entryPrice, bar_index, exitPrice,
+         color = win ? color.new(color.green, 0) : color.new(color.red, 0), width = 2)
+    label.new(bar_index, high, "▼ خروج", color = win ? color.new(color.green, 40) : color.new(color.red, 30),
+         style = label.style_label_down, textcolor = color.white, size = size.small,
+         tooltip = "سبب الخروج: " + reason + "\nالربح: " + str.tostring(pnlPct, "#.##") + "%" +
+                   "\nدخول: " + str.tostring(entryPrice, format.mintick) +
+                   "\nخروج: " + str.tostring(exitPrice, format.mintick))
+    inTrade := false
+
+// ----------------------- الرسم -----------------------
+plot(showZones ? swingLow  : na, "القاع المتأرجح", color = color.new(color.red,   50))
+plot(showZones ? swingHigh : na, "القمة المتأرجحة", color = color.new(color.green, 50))
+// تظليل أثناء وجود صفقة مفتوحة
+bgcolor(inTrade ? color.new(color.blue, 92) : na, title = "صفقة مفتوحة")

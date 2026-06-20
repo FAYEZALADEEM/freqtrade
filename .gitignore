@@ -17,6 +17,9 @@ freqtrade-profit-plot.html
 freqtrade/rpc/api_server/ui/*
 build_helpers/ta-lib/*
 
+# Cloud backtest artifacts (heavy binary models/predictions — keep local only)
+cloud_download/models/
+
 # Macos related
 .DS_Store
 

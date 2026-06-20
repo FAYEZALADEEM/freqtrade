@@ -1,0 +1,44 @@
+//@version=6
+// =============================================================
+// MeanReversion_FX — مؤشر إشارات نظيف (بدون رسم الصفقات السابقة)
+// يعرض فقط: حواشي بولنجر + علامة دخول/خروج لحظة حدوثها + تنبيهات.
+// منطق الارتداد المُختبَر (BB 20/2.5 + RSI). الأنسب: EUR/USD, AUD/USD, GBP/USD على 1h.
+// =============================================================
+indicator("MeanReversion_FX — إشارات", overlay = true)
+
+// ----------------------- المدخلات (tooltip عربي بجانب كل إعداد) -----------------------
+bbPeriod = input.int(20, "فترة بولنجر",
+     tooltip = "عدد الشموع لحساب المتوسط والانحراف. 20 = قياسي.")
+bbStd    = input.float(2.5, "انحراف بولنجر", step = 0.1,
+     tooltip = "عرض الحاشية = كم انحراف معياري عن المتوسط. 2.5 = حاشية واسعة (إشارات أقل وأجود).")
+rsiBuy   = input.int(30, "حدّ RSI للشراء",
+     tooltip = "نشتري حين RSI أقل من هذا الحد (تشبّع بيعي). 30 = القياسي للارتداد.")
+rsiExit  = input.int(55, "حدّ RSI للخروج",
+     tooltip = "إشارة خروج حين يرتفع RSI فوق هذا الحد — أو عند عودة السعر فوق متوسط بولنجر.")
+showBands = input.bool(true, "إظهار حواشي بولنجر",
+     tooltip = "رسم الحاشية العليا/السفلى والمتوسط المستخدمة في الإشارات.")
+
+// ----------------------- المؤشرات -----------------------
+basis = ta.sma(close, bbPeriod)
+dev   = bbStd * ta.stdev(close, bbPeriod)
+bbLow = basis - dev
+bbUp  = basis + dev
+rsi   = ta.rsi(close, 14)
+
+// ----------------------- الإشارات -----------------------
+longSignal = (close < bbLow) and (rsi < rsiBuy)
+exitSignal = (close > basis) or (rsi > rsiExit)
+
+// ----------------------- الرسم -----------------------
+plot(showBands ? basis : na, "متوسط بولنجر", color = color.new(color.orange, 0))
+plot(showBands ? bbUp  : na, "الحاشية العليا", color = color.new(color.blue, 50))
+plot(showBands ? bbLow : na, "الحاشية السفلى", color = color.new(color.blue, 50))
+
+plotshape(longSignal, "إشارة دخول", style = shape.triangleup, location = location.belowbar,
+     color = color.new(color.green, 0), size = size.small, text = "دخول", textcolor = color.white)
+plotshape(exitSignal, "إشارة خروج", style = shape.triangledown, location = location.abovebar,
+     color = color.new(color.red, 20), size = size.tiny)
+
+// ----------------------- تنبيهات حيّة -----------------------
+alertcondition(longSignal, "دخول الارتداد", "تشبّع بيعي — دخول شراء")
+alertcondition(exitSignal, "خروج الارتداد", "عودة للمتوسط — خروج")

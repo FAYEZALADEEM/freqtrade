@@ -1,0 +1,16 @@
+FROM freqtradeorg/freqtrade:stable_freqai
+
+WORKDIR /freqtrade
+
+# نسخ الاستراتيجيات والبيانات والإعدادات
+COPY user_data/strategies/ /freqtrade/user_data/strategies/
+COPY user_data/data/ /freqtrade/user_data/data/
+COPY user_data/config_backtest.json /freqtrade/user_data/config_backtest.json
+COPY user_data/config_freqai.json /freqtrade/user_data/config_freqai.json
+
+# إنشاء مجلدات النتائج
+RUN mkdir -p /freqtrade/user_data/backtest_results \
+    && mkdir -p /freqtrade/user_data/models \
+    && mkdir -p /freqtrade/user_data/logs
+
+VOLUME ["/freqtrade/user_data/backtest_results", "/freqtrade/user_data/models", "/freqtrade/user_data/logs"]

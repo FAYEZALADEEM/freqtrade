@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  backtest:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    image: freqtrade-cloud:latest
+    container_name: freqtrade_backtest
+    volumes:
+      - ./user_data/backtest_results:/freqtrade/user_data/backtest_results
+      - ./user_data/models:/freqtrade/user_data/models
+      - ./user_data/logs:/freqtrade/user_data/logs
+    environment:
+      - TIMERANGE=20240101-20251231
+      - JOBS=8
+    entrypoint: ["bash", "/freqtrade/run_parallel.sh"]
+    command: ["--timerange", "${TIMERANGE:-20240101-20251231}", "--jobs", "${JOBS:-8}"]
+    restart: "no"
